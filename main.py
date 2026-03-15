@@ -30,7 +30,7 @@ def rate_limit_after_application(cfg):
     time.sleep(cfg["delay_between_applications_sec"])
 
 
-def main():
+def main(dry_run: bool = False):
     cfg = get_config()
     if not cfg["email"] or not cfg["password"]:
         print("Set LINKEDIN_EMAIL and LINKEDIN_PASSWORD in .env or environment.")
@@ -57,6 +57,13 @@ def main():
             print("Job search navigation failed.")
             sys.exit(1)
         rate_limit_actions(cfg)
+
+        if dry_run:
+            cards = get_job_cards(driver)
+            easy_apply_cards = [c for c in cards if job_has_easy_apply(c)]
+            print(f"Dry run: found {len(cards)} job cards, {len(easy_apply_cards)} with Easy Apply.")
+            print("Login and search OK. Run without --dry-run to apply.")
+            return
 
         existing = load_existing_tracking(tracking_file, tracking_fmt)
         applied_count = 0
@@ -119,4 +126,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    dry_run = "--dry-run" in sys.argv or "-n" in sys.argv
+    main(dry_run=dry_run)

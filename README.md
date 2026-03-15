@@ -120,15 +120,34 @@ Example (all optional if using env vars):
 
 Environment variables override config file values. Credentials **must** come from the environment (or `.env`), not from the config file.
 
-## How to run
+## How to run and test
 
-1. Activate the virtualenv.
-2. Ensure `.env` (or env vars) is set with `LINKEDIN_EMAIL` and `LINKEDIN_PASSWORD`.
+### Quick test (no applications submitted)
+
+1. **Setup once**
+   ```bash
+   cd linkedin-easy-apply
+   python -m venv venv
+   .\venv\Scripts\Activate.ps1   # Windows PowerShell
+   pip install -r requirements.txt
+   ```
+2. **Add credentials**
+   - Copy `.env.example` to `.env` and set `LINKEDIN_EMAIL` and `LINKEDIN_PASSWORD`.
+3. **Dry run** (login + search only; no Easy Apply clicks, no submissions):
+   ```bash
+   python main.py --dry-run
+   ```
+   You should see a Chrome window log in, open the job search, and then:  
+   `Dry run: found N job cards, M with Easy Apply. Login and search OK. Run without --dry-run to apply.`
+
+### Full run (apply to jobs)
+
+1. Activate the virtualenv and ensure `.env` is set (see above).
+2. Optional: copy `config.example.json` to `config.json` and set keywords, location, delays, `saved_answers`, and `resume_path`.
 3. Run:
-
-```bash
-python main.py
-```
+   ```bash
+   python main.py
+   ```
 
 The script will:
 

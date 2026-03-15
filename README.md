@@ -81,11 +81,29 @@ You can override any of these with environment variables (see below).
 | `LINKEDIN_KEYWORDS` | Job search keywords (e.g. `software engineer`) |
 | `LINKEDIN_LOCATION` | Location (e.g. `United Kingdom`) |
 | `LINKEDIN_REMOTE` | Remote filter (e.g. `Remote`; enables remote filter when set) |
+| `LINKEDIN_JOB_TYPE` | Job type: `F` Full-time, `P` Part-time, `C` Contract, `T` Temporary, `I` Internship |
+| `LINKEDIN_DATE_POSTED` | Date posted: `r86400` 24h, `r604800` week, `r2592000` month |
 | `DELAY_ACTIONS_SEC` | Delay between actions in seconds |
 | `DELAY_APPLICATIONS_SEC` | Delay after each application in seconds |
 | `RESUME_PATH` | Optional path to resume/CV file for upload |
 | `TRACKING_FILE` | Output file for applications (e.g. `applications.json` or `applications.csv`) |
 | `TRACKING_FORMAT` | `json` or `csv` |
+
+### Where to set role, start date, and filters
+
+| What you want | Where to set it | File / section |
+|---------------|-----------------|----------------|
+| **Job role / title** | Search keywords | `config.json` → `search.keywords` (or env `LINKEDIN_KEYWORDS`) |
+| **Job type** (Full-time, Part-time, Contract, etc.) | Search filter | `config.json` → `search.job_type` (or env `LINKEDIN_JOB_TYPE`) |
+| **Date posted** (e.g. past week) | Search filter | `config.json` → `search.date_posted` (or env `LINKEDIN_DATE_POSTED`) |
+| **Start date** (when you can start) | Answer in Easy Apply form | `config.json` → `saved_answers.start_date` |
+| **Location, remote** | Search | `search.location`, `search.remote` |
+| **Phone, city, cover letter, salary, sponsorship** | Answers in Easy Apply form | `saved_answers` in `config.json` |
+
+- **Search filters** (role type, date posted): in **`config.json`** under **`search`**, or via env vars.  
+  - `job_type`: `F` = Full-time, `P` = Part-time, `C` = Contract, `T` = Temporary, `I` = Internship. Leave empty for no filter.  
+  - `date_posted`: `r86400` = past 24 hours, `r604800` = past week, `r2592000` = past month. Leave empty for no filter.  
+- **Form answers** (start date, phone, city, etc.): in **`config.json`** under **`saved_answers`**. These are used when filling the Easy Apply modal.
 
 ### Config file (`config.json`)
 
@@ -96,7 +114,9 @@ Example (all optional if using env vars):
   "search": {
     "keywords": "software engineer",
     "location": "United Kingdom",
-    "remote": "Remote"
+    "remote": "Remote",
+    "job_type": "F",
+    "date_posted": "r604800"
   },
   "rate_limiting": {
     "delay_between_actions_sec": 2,

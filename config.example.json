@@ -2,7 +2,9 @@
   "search": {
     "keywords": "software engineer",
     "location": "United Kingdom",
-    "remote": "Remote"
+    "remote": "Remote",
+    "job_type": "F",
+    "date_posted": "r604800"
   },
   "rate_limiting": {
     "delay_between_actions_sec": 2,

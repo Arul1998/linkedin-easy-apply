@@ -67,8 +67,17 @@ def login(driver, email: str, password: str) -> bool:
         return False
 
 
-def build_jobs_search_url(keywords: str, location: str, remote: str) -> str:
-    """Build LinkedIn jobs search URL with Easy Apply filter."""
+def build_jobs_search_url(
+    keywords: str,
+    location: str,
+    remote: str,
+    job_type: str = "",
+    date_posted: str = "",
+) -> str:
+    """Build LinkedIn jobs search URL with Easy Apply filter.
+    job_type: F=Full-time, P=Part-time, C=Contract, T=Temporary, I=Internship. Empty = no filter.
+    date_posted: r86400=24h, r604800=week, r2592000=month. Empty = no filter.
+    """
     base = "https://www.linkedin.com/jobs/search/"
     params = {
         "keywords": keywords,
@@ -77,12 +86,23 @@ def build_jobs_search_url(keywords: str, location: str, remote: str) -> str:
     }
     if remote:
         params["f_WT"] = "2"  # Remote
+    if job_type:
+        params["f_JT"] = job_type
+    if date_posted:
+        params["f_TPR"] = date_posted
     return base + "?" + urllib.parse.urlencode(params)
 
 
-def navigate_to_search(driver, keywords: str, location: str, remote: str) -> bool:
+def navigate_to_search(
+    driver,
+    keywords: str,
+    location: str,
+    remote: str,
+    job_type: str = "",
+    date_posted: str = "",
+) -> bool:
     """Open job search results (Easy Apply filtered)."""
-    url = build_jobs_search_url(keywords, location, remote)
+    url = build_jobs_search_url(keywords, location, remote, job_type, date_posted)
     driver.get(url)
     time.sleep(PAGE_LOAD_WAIT)
     return "jobs" in driver.current_url
@@ -224,6 +244,38 @@ def fill_easy_apply_modal(driver, saved_answers: dict, resume_path: str) -> str:
                     if t.is_displayed() and "cover" in (t.get_attribute("name") or t.get_attribute("id") or "").lower():
                         t.clear()
                         t.send_keys(saved_answers["cover_letter"])
+                        break
+            except Exception:
+                pass
+
+        # Start date (dropdown or input)
+        if saved_answers.get("start_date"):
+            try:
+                start_val = saved_answers["start_date"]
+                # Try dropdown: click and pick option containing our value
+                dropdowns = driver.find_elements(By.CSS_SELECTOR, "select, [role='listbox']")
+                for dd in dropdowns:
+                    if not dd.is_displayed():
+                        continue
+                    label = driver.find_elements(By.XPATH, "//label[contains(.,'start') or contains(.,'Start') or contains(.,'available')]")
+                    if dd.get_attribute("id") or (label and dd.location == label[0].location):
+                        try:
+                            dd.click()
+                            time.sleep(0.5)
+                            opts = driver.find_elements(By.XPATH, f"//*[contains(translate(., '{start_val[:4].upper()}', '{start_val[:4].lower()}'), '{start_val[:4].lower()}')]")
+                            for o in opts:
+                                if o.is_displayed():
+                                    o.click()
+                                    break
+                        except Exception:
+                            pass
+                        break
+                # Fallback: input with placeholder/label about date
+                inputs = driver.find_elements(By.XPATH, "//input[contains(@placeholder,'date') or contains(@placeholder,'Date') or contains(@id,'start')]")
+                for inp in inputs:
+                    if inp.is_displayed():
+                        inp.clear()
+                        inp.send_keys(start_val)
                         break
             except Exception:
                 pass

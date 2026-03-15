@@ -46,6 +46,8 @@ def get_config():
         "keywords": os.environ.get("LINKEDIN_KEYWORDS", search.get("keywords", "software engineer")),
         "location": os.environ.get("LINKEDIN_LOCATION", search.get("location", "United Kingdom")),
         "remote": os.environ.get("LINKEDIN_REMOTE", search.get("remote", "Remote")),
+        "job_type": os.environ.get("LINKEDIN_JOB_TYPE", search.get("job_type", "")),
+        "date_posted": os.environ.get("LINKEDIN_DATE_POSTED", search.get("date_posted", "")),
         "delay_between_actions_sec": float(
             os.environ.get("DELAY_ACTIONS_SEC", rate.get("delay_between_actions_sec", DEFAULT_DELAY_ACTIONS))
         ),

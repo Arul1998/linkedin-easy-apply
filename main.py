@@ -53,6 +53,8 @@ def main(dry_run: bool = False):
             cfg["keywords"],
             cfg["location"],
             cfg.get("remote", ""),
+            cfg.get("job_type", ""),
+            cfg.get("date_posted", ""),
         ):
             print("Job search navigation failed.")
             sys.exit(1)

@@ -1,0 +1,30 @@
+# Environment and secrets
+.env
+.env.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Output and data
+applications.csv
+applications.json
+*.log
+
+# Selenium / browser
+geckodriver.log
+chromedriver.log

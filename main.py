@@ -52,9 +52,12 @@ def main(dry_run: bool = False):
             driver,
             cfg["keywords"],
             cfg["location"],
-            cfg.get("remote", ""),
+            cfg.get("work_type", ""),
             cfg.get("job_type", ""),
             cfg.get("date_posted", ""),
+            cfg.get("experience_level", ""),
+            cfg.get("few_applicants", False),
+            cfg.get("geo_id", ""),
         ):
             print("Job search navigation failed.")
             sys.exit(1)

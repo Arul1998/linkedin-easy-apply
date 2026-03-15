@@ -25,6 +25,13 @@ def _load_json_config(path: Path) -> dict:
         return json.load(f)
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    val = os.environ.get(name, "").strip().lower()
+    if not val:
+        return bool(default)
+    return val in ("1", "true", "yes", "on")
+
+
 def get_config():
     """Build config from env and optional config file. Env overrides file."""
     config_file = os.environ.get("CONFIG_FILE", "").strip()
@@ -45,9 +52,12 @@ def get_config():
         "password": password,
         "keywords": os.environ.get("LINKEDIN_KEYWORDS", search.get("keywords", "software engineer")),
         "location": os.environ.get("LINKEDIN_LOCATION", search.get("location", "United Kingdom")),
-        "remote": os.environ.get("LINKEDIN_REMOTE", search.get("remote", "Remote")),
+        "work_type": os.environ.get("LINKEDIN_WORK_TYPE", search.get("work_type", search.get("remote", ""))),
         "job_type": os.environ.get("LINKEDIN_JOB_TYPE", search.get("job_type", "")),
         "date_posted": os.environ.get("LINKEDIN_DATE_POSTED", search.get("date_posted", "")),
+        "experience_level": os.environ.get("LINKEDIN_EXPERIENCE_LEVEL", search.get("experience_level", "")),
+        "few_applicants": _bool_env("LINKEDIN_FEW_APPLICANTS", search.get("few_applicants", False)),
+        "geo_id": os.environ.get("LINKEDIN_GEO_ID", search.get("geo_id", "")),
         "delay_between_actions_sec": float(
             os.environ.get("DELAY_ACTIONS_SEC", rate.get("delay_between_actions_sec", DEFAULT_DELAY_ACTIONS))
         ),

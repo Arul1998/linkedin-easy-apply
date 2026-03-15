@@ -67,16 +67,34 @@ def login(driver, email: str, password: str) -> bool:
         return False
 
 
+# Work type: 1=On-site, 2=Remote, 3=Hybrid (can pass "1"/"2"/"3" or "On-site"/"Remote"/"Hybrid")
+_WORK_TYPE_MAP = {"1": "1", "2": "2", "3": "3", "on-site": "1", "onsite": "1", "remote": "2", "hybrid": "3"}
+
+
+def _normalize_work_type(v: str) -> str:
+    if not v:
+        return ""
+    k = str(v).strip().lower()
+    return _WORK_TYPE_MAP.get(k, v)
+
+
 def build_jobs_search_url(
     keywords: str,
     location: str,
-    remote: str,
+    work_type: str = "",
     job_type: str = "",
     date_posted: str = "",
+    experience_level: str = "",
+    few_applicants: bool = False,
+    geo_id: str = "",
 ) -> str:
     """Build LinkedIn jobs search URL with Easy Apply filter.
-    job_type: F=Full-time, P=Part-time, C=Contract, T=Temporary, I=Internship. Empty = no filter.
-    date_posted: r86400=24h, r604800=week, r2592000=month. Empty = no filter.
+    work_type: 1=On-site, 2=Remote, 3=Hybrid (or "On-site"/"Remote"/"Hybrid").
+    job_type: F=Full-time, P=Part-time, C=Contract, T=Temporary, V=Volunteer, I=Internship, O=Other.
+    date_posted: r86400=24h, r604800=week, r2592000=month.
+    experience_level: 1=Intern, 2=Associate, 3=Junior, 4=Mid-Senior, 5=Director, 6=Executive (comma-separated for multiple).
+    few_applicants: true -> jobs with fewer than 10 applicants.
+    geo_id: LinkedIn geographic ID (optional; overrides location if set).
     """
     base = "https://www.linkedin.com/jobs/search/"
     params = {
@@ -84,12 +102,19 @@ def build_jobs_search_url(
         "location": location,
         "f_AL": "true",  # Easy Apply only
     }
-    if remote:
-        params["f_WT"] = "2"  # Remote
+    wt = _normalize_work_type(work_type)
+    if wt:
+        params["f_WT"] = wt
     if job_type:
         params["f_JT"] = job_type
     if date_posted:
         params["f_TPR"] = date_posted
+    if experience_level:
+        params["f_E"] = experience_level.strip()
+    if few_applicants:
+        params["f_JIYN"] = "true"
+    if geo_id:
+        params["geoId"] = geo_id.strip()
     return base + "?" + urllib.parse.urlencode(params)
 
 
@@ -97,12 +122,18 @@ def navigate_to_search(
     driver,
     keywords: str,
     location: str,
-    remote: str,
+    work_type: str = "",
     job_type: str = "",
     date_posted: str = "",
+    experience_level: str = "",
+    few_applicants: bool = False,
+    geo_id: str = "",
 ) -> bool:
     """Open job search results (Easy Apply filtered)."""
-    url = build_jobs_search_url(keywords, location, remote, job_type, date_posted)
+    url = build_jobs_search_url(
+        keywords, location, work_type, job_type, date_posted,
+        experience_level, few_applicants, geo_id,
+    )
     driver.get(url)
     time.sleep(PAGE_LOAD_WAIT)
     return "jobs" in driver.current_url

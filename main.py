@@ -4,6 +4,7 @@ LinkedIn Easy Apply – standalone automation.
 Run: set env vars (or .env), optionally copy config.example.json to config.json, then:
   python main.py
 """
+import argparse
 import logging
 import sys
 import time
@@ -223,6 +224,74 @@ def main(dry_run: bool = False) -> None:
         driver.quit()
 
 
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Automate LinkedIn Easy Apply for configured job searches."
+    )
+    parser.add_argument(
+        "--dry-run",
+        "-n",
+        action="store_true",
+        help="Login and open the job search, but do not submit any applications.",
+    )
+    parser.add_argument(
+        "--keywords",
+        help="Override configured keywords / role for this run (e.g. 'software engineer').",
+    )
+    parser.add_argument(
+        "--location",
+        help="Override configured location for this run (e.g. 'United Kingdom').",
+    )
+    parser.add_argument(
+        "--max-applications",
+        type=int,
+        help="Override configured max applications for this run (0 = no limit).",
+    )
+    parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Show a one-time summary of filters and limits and ask for confirmation before applying.",
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    dry_run = "--dry-run" in sys.argv or "-n" in sys.argv
-    main(dry_run=dry_run)
+    args = _parse_args(sys.argv[1:])
+    dry_run_flag = bool(args.dry_run)
+
+    # Load config once so we can apply user-friendly overrides before running.
+    _configure_logging()
+    cfg = get_config()
+
+    if args.keywords:
+        cfg.keywords = args.keywords
+    if args.location:
+        cfg.location = args.location
+    if args.max_applications is not None:
+        cfg.max_applications = max(args.max_applications, 0)
+
+    logging.getLogger("linkedin_easy_apply").info(
+        "Using configuration for this run: dry_run=%s, keywords=%r, location=%r, "
+        "max_applications=%s, delay_between_actions_sec=%.1f, "
+        "delay_between_applications_sec=%.1f",
+        dry_run_flag,
+        cfg.keywords,
+        cfg.location,
+        cfg.max_applications or 0,
+        cfg.delay_between_actions_sec,
+        cfg.delay_between_applications_sec,
+    )
+
+    if args.confirm and not dry_run_flag:
+        print(
+            "\nAbout to start a live Easy Apply run with the above configuration.\n"
+            "This will submit real applications on LinkedIn.\n"
+        )
+        proceed = input("Proceed? [y/N]: ").strip().lower()
+        if proceed not in ("y", "yes"):
+            print("Aborted by user.")
+            sys.exit(0)
+
+    # Pass dry_run flag through; main() will read current config from get_config().
+    # We re-call get_config() inside main so non-CLI users keep the same behavior.
+    main(dry_run=dry_run_flag)

@@ -32,6 +32,16 @@ def _bool_env(name: str, default: bool) -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+def _int_env(name: str, default: int) -> int:
+    val = os.environ.get(name, "").strip()
+    if not val:
+        return int(default) if default is not None else 0
+    try:
+        return int(val)
+    except ValueError:
+        return int(default) if default is not None else 0
+
+
 def get_config():
     """Build config from env and optional config file. Env overrides file."""
     config_file = os.environ.get("CONFIG_FILE", "").strip()
@@ -45,12 +55,13 @@ def get_config():
     search = file_cfg.get("search", {})
     rate = file_cfg.get("rate_limiting", {})
     tracking = file_cfg.get("tracking", {})
-    saved = file_cfg.get("saved_answers", {})
+    saved_defaults = {"first_name": "", "last_name": "", "email": "", "phone": "", "phone_country_code": "", "city": "", "cover_letter": "", "salary": "", "sponsorship": "No", "start_date": "Immediately"}
+    saved = {**saved_defaults, **file_cfg.get("saved_answers", {})}
 
     return {
         "email": email,
         "password": password,
-        "keywords": os.environ.get("LINKEDIN_KEYWORDS", search.get("keywords", "software engineer")),
+        "keywords": os.environ.get("LINKEDIN_KEYWORDS", search.get("keywords", "frontend developer")),
         "location": os.environ.get("LINKEDIN_LOCATION", search.get("location", "United Kingdom")),
         "work_type": os.environ.get("LINKEDIN_WORK_TYPE", search.get("work_type", search.get("remote", ""))),
         "job_type": os.environ.get("LINKEDIN_JOB_TYPE", search.get("job_type", "")),
@@ -67,5 +78,6 @@ def get_config():
         "resume_path": os.environ.get("RESUME_PATH", file_cfg.get("resume_path", "")),
         "tracking_file": os.environ.get("TRACKING_FILE", tracking.get("output_file", DEFAULT_TRACKING_FILE)),
         "tracking_format": os.environ.get("TRACKING_FORMAT", tracking.get("format", DEFAULT_TRACKING_FORMAT)).lower(),
+        "max_applications": _int_env("MAX_APPLICATIONS", file_cfg.get("max_applications", 0)),
         "saved_answers": saved,
     }

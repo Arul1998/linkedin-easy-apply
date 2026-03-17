@@ -91,6 +91,7 @@ You can override any of these with environment variables (see below).
 | `RESUME_PATH` | Optional path to resume/CV file for upload |
 | `TRACKING_FILE` | Output file for applications (e.g. `applications.json` or `applications.csv`) |
 | `TRACKING_FORMAT` | `json` or `csv` |
+| `MAX_APPLICATIONS` | Max number of applications per run (e.g. `5` for testing; `0` = no limit) |
 
 ### Where to set role, start date, and filters
 
@@ -105,7 +106,7 @@ You can override any of these with environment variables (see below).
 | **Few applicants** (&lt;10) | Search | `few_applicants` / `LINKEDIN_FEW_APPLICANTS` (`true`/`false`) |
 | **Location by ID** | Search | `geo_id` / `LINKEDIN_GEO_ID` (optional) |
 | **Start date** (when you can start) | Easy Apply form answer | `saved_answers.start_date` |
-| **Phone, city, cover letter, salary, sponsorship** | Easy Apply form answers | `saved_answers` in `config.json` |
+| **First name, last name, email, phone, city, cover letter, salary, sponsorship** | Easy Apply form answers | `saved_answers` in `config.json` |
 
 **Search filters reference** (all under `config.json` → `search`, or env):
 
@@ -122,7 +123,7 @@ You can override any of these with environment variables (see below).
 
 **Not available as URL filters** (LinkedIn does not expose these in the search URL): salary range, industry, job function, benefits, sponsorship. You can add keywords like "visa sponsorship" in `keywords`, or apply those filters once manually in LinkedIn’s job search UI and then run the script.
 
-**Form answers** (start date, phone, city, cover letter, salary, sponsorship, etc.) go in **`saved_answers`** and are used when filling the Easy Apply modal.
+**Form answers** (first name, last name, email, phone, city, start date, cover letter, salary, sponsorship, etc.) go in **`saved_answers`** and are used when filling the Easy Apply modal.
 
 ### Config file (`config.json`)
 
@@ -130,6 +131,7 @@ Example (all optional if using env vars):
 
 ```json
 {
+  "max_applications": 5,
   "search": {
     "keywords": "software engineer",
     "location": "United Kingdom",
@@ -150,6 +152,9 @@ Example (all optional if using env vars):
     "format": "json"
   },
   "saved_answers": {
+    "first_name": "Your First Name",
+    "last_name": "Your Last Name",
+    "email": "your.email@example.com",
     "phone": "+44 ...",
     "city": "London",
     "cover_letter": "...",

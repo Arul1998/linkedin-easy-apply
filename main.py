@@ -12,6 +12,7 @@ from linkedin_automation import (
     get_driver,
     login,
     navigate_to_search,
+    ensure_easy_apply_url,
     get_job_cards,
     job_has_easy_apply,
     get_job_url_from_card,
@@ -28,6 +29,15 @@ def rate_limit_actions(cfg):
 def rate_limit_after_application(cfg):
     """Delay after submitting an application."""
     time.sleep(cfg["delay_between_applications_sec"])
+
+
+def _scroll_job_list(driver):
+    try:
+        driver.execute_script(
+            "var el = document.querySelector('.jobs-search-results-list') || document.querySelector('.scaffold-layout__list-container'); if(el) el.scrollBy(0, 220);"
+        )
+    except Exception:
+        pass
 
 
 def main(dry_run: bool = False):
@@ -73,57 +83,80 @@ def main(dry_run: bool = False):
         existing = load_existing_tracking(tracking_file, tracking_fmt)
         applied_count = 0
         skipped_count = 0
+        max_applications = cfg.get("max_applications") or 0
+        last_processed_url = None
 
         while True:
+            if max_applications > 0 and applied_count >= max_applications:
+                print(f"Reached limit of {max_applications} applications.")
+                break
+            ensure_easy_apply_url(driver)
             cards = get_job_cards(driver)
+            if not cards:
+                time.sleep(3)
+                cards = get_job_cards(driver)
+            if not cards:
+                time.sleep(2)
+                cards = get_job_cards(driver)
             easy_apply_cards = [c for c in cards if job_has_easy_apply(c)]
             if not easy_apply_cards:
-                print("No more Easy Apply jobs in view. Scroll the list or run again later.")
+                easy_apply_cards = cards
+            if not cards:
+                print("No job cards found. Page may still be loading, or LinkedIn's layout changed.")
                 break
 
-            for card in easy_apply_cards:
-                try:
-                    job_url = None
-                    job_url = get_job_url_from_card(card)
-                    if not job_url:
-                        continue
-                    if already_applied(tracking_file, tracking_fmt, job_url):
-                        skipped_count += 1
-                        continue
-
-                    rate_limit_actions(cfg)
-                    title, company, url, status = apply_to_job(
-                        driver,
-                        card,
-                        cfg["saved_answers"],
-                        cfg.get("resume_path", ""),
-                    )
-                    if status == "applied":
-                        record_application(
-                            tracking_file,
-                            tracking_fmt,
-                            title,
-                            company,
-                            url,
-                            existing=existing if tracking_fmt == "json" else None,
-                        )
-                        applied_count += 1
-                        print(f"Applied: {title} @ {company}")
-                        rate_limit_after_application(cfg)
-                    else:
-                        skipped_count += 1
-                except Exception as e:
-                    print(f"Error processing job: {e}")
-                    rate_limit_actions(cfg)
-
-            # Scroll job list to load more (optional: break after first page to avoid infinite loop)
-            try:
-                driver.execute_script(
-                    "document.querySelector('.jobs-search-results-list')?.scrollBy(0, 400);"
-                )
+            card = None
+            job_url = None
+            for c in cards:
+                url = get_job_url_from_card(c)
+                if not url:
+                    continue
+                if url == last_processed_url:
+                    continue
+                if already_applied(tracking_file, tracking_fmt, url):
+                    skipped_count += 1
+                    last_processed_url = url
+                    break
+                card = c
+                job_url = url
+                break
+            if card is None:
+                _scroll_job_list(driver)
+                _scroll_job_list(driver)
                 rate_limit_actions(cfg)
-            except Exception:
-                break
+                continue
+
+            try:
+                last_processed_url = job_url
+                rate_limit_actions(cfg)
+                title, company, url, status = apply_to_job(
+                    driver,
+                    card,
+                    cfg["saved_answers"],
+                    cfg.get("resume_path", ""),
+                )
+                if status == "applied":
+                    record_application(
+                        tracking_file,
+                        tracking_fmt,
+                        title,
+                        company,
+                        url,
+                        existing=existing if tracking_fmt == "json" else None,
+                    )
+                    applied_count += 1
+                    print(f"Applied: {title} @ {company}")
+                    rate_limit_after_application(cfg)
+                else:
+                    skipped_count += 1
+                    if status != "skipped":
+                        print(f"Skipped: {title} @ {company} ({status})")
+            except Exception as e:
+                print(f"Error: {e}")
+                rate_limit_actions(cfg)
+
+            _scroll_job_list(driver)
+            rate_limit_actions(cfg)
 
         print(f"Done. Applied: {applied_count}, Skipped: {skipped_count}. Tracking: {tracking_file}")
     finally:

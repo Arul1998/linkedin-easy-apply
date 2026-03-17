@@ -1,6 +1,7 @@
 {
+  "max_applications": 5,
   "search": {
-    "keywords": "software engineer",
+    "keywords": "frontend developer",
     "location": "United Kingdom",
     "work_type": "2",
     "job_type": "F",
@@ -19,9 +20,13 @@
     "format": "json"
   },
   "saved_answers": {
-    "phone": "",
-    "city": "",
-    "cover_letter": "",
+    "first_name": "jack",
+    "last_name": "testing",
+    "email": "jack.testing@example.com",
+    "phone": "7123456789",
+    "phone_country_code": "+44",
+    "city": "London",
+    "cover_letter": "I am interested in this role and would welcome the opportunity to discuss.",
     "salary": "",
     "sponsorship": "No",
     "start_date": "Immediately"

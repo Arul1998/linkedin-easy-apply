@@ -4,10 +4,13 @@ LinkedIn Easy Apply – standalone automation.
 Run: set env vars (or .env), optionally copy config.example.json to config.json, then:
   python main.py
 """
+import logging
 import sys
 import time
+from collections import Counter
+from typing import Optional
 
-from config import get_config
+from config import AppConfig, get_config
 from linkedin_automation import (
     get_driver,
     login,
@@ -21,75 +24,117 @@ from linkedin_automation import (
 from tracker import record_application, already_applied, load_existing_tracking
 
 
-def rate_limit_actions(cfg):
+logger = logging.getLogger("linkedin_easy_apply")
+
+
+def _configure_logging() -> None:
+    """Configure root logging for the CLI run."""
+    if logging.getLogger().handlers:
+        return
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    )
+
+
+def rate_limit_actions(cfg: AppConfig) -> None:
     """Delay between general actions (clicks, page loads)."""
-    time.sleep(cfg["delay_between_actions_sec"])
+    time.sleep(cfg.delay_between_actions_sec)
 
 
-def rate_limit_after_application(cfg):
+def rate_limit_after_application(cfg: AppConfig) -> None:
     """Delay after submitting an application."""
-    time.sleep(cfg["delay_between_applications_sec"])
+    time.sleep(cfg.delay_between_applications_sec)
 
 
-def _scroll_job_list(driver):
+def _scroll_job_list(driver) -> None:
     try:
         driver.execute_script(
-            "var el = document.querySelector('.jobs-search-results-list') || document.querySelector('.scaffold-layout__list-container'); if(el) el.scrollBy(0, 220);"
+            "var el = document.querySelector('.jobs-search-results-list') || "
+            "document.querySelector('.scaffold-layout__list-container'); "
+            "if(el) el.scrollBy(0, 220);"
         )
     except Exception:
-        pass
+        logger.debug("Failed to scroll job list.", exc_info=True)
 
 
-def main(dry_run: bool = False):
+def main(dry_run: bool = False) -> None:
+    _configure_logging()
     cfg = get_config()
-    if not cfg["email"] or not cfg["password"]:
-        print("Set LINKEDIN_EMAIL and LINKEDIN_PASSWORD in .env or environment.")
+
+    if not cfg.email or not cfg.password:
+        logger.error("Set LINKEDIN_EMAIL and LINKEDIN_PASSWORD in .env or environment.")
         sys.exit(1)
 
-    tracking_file = cfg["tracking_file"]
-    tracking_fmt = cfg["tracking_format"]
-    if tracking_fmt not in ("json", "csv"):
-        tracking_fmt = "json"
+    tracking_file = cfg.tracking_file
+    tracking_fmt = cfg.tracking_format if cfg.tracking_format in ("json", "csv") else "json"
+
+    logger.info(
+        "Starting LinkedIn Easy Apply (dry_run=%s, max_applications=%s, tracking_file=%s, format=%s)",
+        dry_run,
+        cfg.max_applications or 0,
+        tracking_file,
+        tracking_fmt,
+    )
+    logger.info(
+        "Search filters: keywords=%r, location=%r, work_type=%r, job_type=%r, date_posted=%r, "
+        "experience_level=%r, few_applicants=%r, geo_id=%r",
+        cfg.keywords,
+        cfg.location,
+        cfg.work_type,
+        cfg.job_type,
+        cfg.date_posted,
+        cfg.experience_level,
+        cfg.few_applicants,
+        cfg.geo_id,
+    )
 
     driver = get_driver(headless=False)
     try:
-        if not login(driver, cfg["email"], cfg["password"]):
-            print("Login failed. Check credentials and try again.")
+        if not login(driver, cfg.email, cfg.password):
+            logger.error("Login failed. Check credentials and try again.")
             sys.exit(1)
         rate_limit_actions(cfg)
 
         if not navigate_to_search(
             driver,
-            cfg["keywords"],
-            cfg["location"],
-            cfg.get("work_type", ""),
-            cfg.get("job_type", ""),
-            cfg.get("date_posted", ""),
-            cfg.get("experience_level", ""),
-            cfg.get("few_applicants", False),
-            cfg.get("geo_id", ""),
+            cfg.keywords,
+            cfg.location,
+            cfg.work_type,
+            cfg.job_type,
+            cfg.date_posted,
+            cfg.experience_level,
+            cfg.few_applicants,
+            cfg.geo_id,
         ):
-            print("Job search navigation failed.")
+            logger.error("Job search navigation failed.")
             sys.exit(1)
         rate_limit_actions(cfg)
 
+        cards = get_job_cards(driver)
+        easy_apply_cards = [c for c in cards if job_has_easy_apply(c)]
+
         if dry_run:
-            cards = get_job_cards(driver)
-            easy_apply_cards = [c for c in cards if job_has_easy_apply(c)]
-            print(f"Dry run: found {len(cards)} job cards, {len(easy_apply_cards)} with Easy Apply.")
-            print("Login and search OK. Run without --dry-run to apply.")
+            logger.info(
+                "Dry run: found %d job cards, %d with Easy Apply.",
+                len(cards),
+                len(easy_apply_cards),
+            )
+            logger.info("Login and search OK. Run without --dry-run to apply.")
             return
 
         existing = load_existing_tracking(tracking_file, tracking_fmt)
         applied_count = 0
         skipped_count = 0
-        max_applications = cfg.get("max_applications") or 0
-        last_processed_url = None
+        skip_reasons: Counter[str] = Counter()
+        max_applications = cfg.max_applications or 0
+        last_processed_url: Optional[str] = None
 
         while True:
             if max_applications > 0 and applied_count >= max_applications:
-                print(f"Reached limit of {max_applications} applications.")
+                logger.info("Reached limit of %d applications.", max_applications)
                 break
+
             ensure_easy_apply_url(driver)
             cards = get_job_cards(driver)
             if not cards:
@@ -98,11 +143,11 @@ def main(dry_run: bool = False):
             if not cards:
                 time.sleep(2)
                 cards = get_job_cards(driver)
-            easy_apply_cards = [c for c in cards if job_has_easy_apply(c)]
-            if not easy_apply_cards:
-                easy_apply_cards = cards
+
             if not cards:
-                print("No job cards found. Page may still be loading, or LinkedIn's layout changed.")
+                logger.warning(
+                    "No job cards found. Page may still be loading, or LinkedIn's layout changed."
+                )
                 break
 
             card = None
@@ -115,11 +160,14 @@ def main(dry_run: bool = False):
                     continue
                 if already_applied(tracking_file, tracking_fmt, url):
                     skipped_count += 1
+                    skip_reasons["already_applied"] += 1
                     last_processed_url = url
+                    logger.debug("Skipping already applied job: %s", url)
                     break
                 card = c
                 job_url = url
                 break
+
             if card is None:
                 _scroll_job_list(driver)
                 _scroll_job_list(driver)
@@ -132,8 +180,8 @@ def main(dry_run: bool = False):
                 title, company, url, status = apply_to_job(
                     driver,
                     card,
-                    cfg["saved_answers"],
-                    cfg.get("resume_path", ""),
+                    cfg.saved_answers.__dict__,
+                    cfg.resume_path,
                 )
                 if status == "applied":
                     record_application(
@@ -145,20 +193,32 @@ def main(dry_run: bool = False):
                         existing=existing if tracking_fmt == "json" else None,
                     )
                     applied_count += 1
-                    print(f"Applied: {title} @ {company}")
+                    logger.info("Applied: %s @ %s", title, company)
                     rate_limit_after_application(cfg)
                 else:
                     skipped_count += 1
-                    if status != "skipped":
-                        print(f"Skipped: {title} @ {company} ({status})")
-            except Exception as e:
-                print(f"Error: {e}")
+                    key = status or "skipped"
+                    skip_reasons[key] += 1
+                    logger.info("Skipped: %s @ %s (%s)", title, company, status)
+            except Exception:
+                skipped_count += 1
+                skip_reasons["exception"] += 1
+                logger.exception("Unexpected error while processing job: %s", job_url)
                 rate_limit_actions(cfg)
 
             _scroll_job_list(driver)
             rate_limit_actions(cfg)
 
-        print(f"Done. Applied: {applied_count}, Skipped: {skipped_count}. Tracking: {tracking_file}")
+        logger.info(
+            "Run complete. Applied: %d, Skipped: %d. Tracking file: %s",
+            applied_count,
+            skipped_count,
+            tracking_file,
+        )
+        if skip_reasons:
+            logger.info("Skip reasons breakdown:")
+            for reason, count in skip_reasons.most_common():
+                logger.info("  %s: %d", reason, count)
     finally:
         driver.quit()
 

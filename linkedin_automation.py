@@ -2,6 +2,7 @@
 LinkedIn automation: login, job search, Easy Apply flow.
 Uses Selenium with Chrome; rate limiting applied by caller.
 """
+import logging
 import time
 import urllib.parse
 from pathlib import Path
@@ -17,9 +18,35 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
 
+logger = logging.getLogger("linkedin_easy_apply.automation")
+
 # Timeout for page loads and element appearance
 WAIT_TIMEOUT = 15
 PAGE_LOAD_WAIT = 5
+
+# Centralized DOM selectors to ease maintenance when LinkedIn changes layout.
+JOB_LIST_SELECTORS = [
+    "ul.scaffold-layout__list-container li",
+    "li.jobs-search-results__list-item",
+    "div.job-search-results-list ul li",
+    "[data-occludable-job-id]",
+]
+
+JOB_LIST_XPATH_FALLBACKS = [
+    "//ul[contains(@class,'scaffold-layout')]//li[.//a[contains(@href,'/jobs/')]]",
+    "//li[.//a[contains(@href,'/jobs/view')]]",
+]
+
+EASY_APPLY_TEXT_XPATH = (
+    ".//*[contains(translate(text(),'EASY APPLY','easy apply'),'easy apply') "
+    "or contains(., 'In Apply')]"
+)
+
+EASY_APPLY_ARIA_SELECTORS = [
+    "[aria-label*='Easy Apply']",
+    "[aria-label*='easy apply']",
+    "[aria-label*='In Apply']",
+]
 
 
 def get_driver(headless: bool = False):
@@ -238,25 +265,30 @@ def get_job_cards(driver):
         _scroll_list_into_view(driver)
         try:
             WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "ul.scaffold-layout__list-container li, li.jobs-search-results__list-item, [data-occludable-job-id]"))
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "ul.scaffold-layout__list-container li, li.jobs-search-results__list-item, [data-occludable-job-id]")
+                )
             )
         except Exception:
-            pass
+            logger.debug("Timeout waiting for job list to appear.", exc_info=True)
         time.sleep(2)
         # Try multiple selectors (LinkedIn changes DOM often)
-        cards = driver.find_elements(By.CSS_SELECTOR, "ul.scaffold-layout__list-container li")
+        cards = []
+        for sel in JOB_LIST_SELECTORS:
+            cards = driver.find_elements(By.CSS_SELECTOR, sel)
+            if cards:
+                break
         if not cards:
-            cards = driver.find_elements(By.CSS_SELECTOR, "li.jobs-search-results__list-item")
-        if not cards:
-            cards = driver.find_elements(By.CSS_SELECTOR, "div.job-search-results-list ul li")
-        if not cards:
-            cards = driver.find_elements(By.CSS_SELECTOR, "[data-occludable-job-id]")
-        if not cards:
-            cards = driver.find_elements(By.XPATH, "//ul[contains(@class,'scaffold-layout')]//li[.//a[contains(@href,'/jobs/')]]")
-        if not cards:
-            cards = driver.find_elements(By.XPATH, "//li[.//a[contains(@href,'/jobs/view')]]")
-        return [c for c in cards if c.is_displayed()]
+            for xpath in JOB_LIST_XPATH_FALLBACKS:
+                cards = driver.find_elements(By.XPATH, xpath)
+                if cards:
+                    break
+        visible_cards = [c for c in cards if c.is_displayed()]
+        if not visible_cards:
+            logger.warning("No visible job cards found with known selectors.")
+        return visible_cards
     except Exception:
+        logger.exception("Failed to collect job cards.")
         return []
 
 
@@ -266,10 +298,12 @@ def job_has_easy_apply(card) -> bool:
         text = card.text.lower()
         if "easy apply" in text or "in apply" in text:
             return True
-        btn = card.find_elements(By.XPATH, ".//*[contains(translate(text(),'EASY APPLY','easy apply'),'easy apply') or contains(., 'In Apply')]")
+        btn = card.find_elements(By.XPATH, EASY_APPLY_TEXT_XPATH)
         if btn:
             return True
-        aria = card.find_elements(By.CSS_SELECTOR, "[aria-label*='Easy Apply'], [aria-label*='easy apply'], [aria-label*='In Apply']")
+        aria = []
+        for sel in EASY_APPLY_ARIA_SELECTORS:
+            aria.extend(card.find_elements(By.CSS_SELECTOR, sel))
         return len(aria) > 0
     except Exception:
         return False

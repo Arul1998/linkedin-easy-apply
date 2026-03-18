@@ -22,7 +22,7 @@ from linkedin_automation import (
     get_job_url_from_card,
     apply_to_job,
 )
-from tracker import record_application, already_applied, load_existing_tracking
+from tracker import record_application, load_existing_tracking
 
 
 logger = logging.getLogger("linkedin_easy_apply")
@@ -59,9 +59,10 @@ def _scroll_job_list(driver) -> None:
         logger.debug("Failed to scroll job list.", exc_info=True)
 
 
-def main(dry_run: bool = False) -> None:
+def main(dry_run: bool = False, cfg: Optional[AppConfig] = None) -> None:
     _configure_logging()
-    cfg = get_config()
+    if cfg is None:
+        cfg = get_config()
 
     if not cfg.email or not cfg.password:
         logger.error("Set LINKEDIN_EMAIL and LINKEDIN_PASSWORD in .env or environment.")
@@ -125,11 +126,14 @@ def main(dry_run: bool = False) -> None:
             return
 
         existing = load_existing_tracking(tracking_file, tracking_fmt)
+        applied_urls: set[str] = {r.get("job_url", "") for r in existing}
         applied_count = 0
         skipped_count = 0
         skip_reasons: Counter[str] = Counter()
         max_applications = cfg.max_applications or 0
         last_processed_url: Optional[str] = None
+        scroll_attempts = 0
+        MAX_SCROLL_ATTEMPTS = 10
 
         while True:
             if max_applications > 0 and applied_count >= max_applications:
@@ -159,7 +163,7 @@ def main(dry_run: bool = False) -> None:
                     continue
                 if url == last_processed_url:
                     continue
-                if already_applied(tracking_file, tracking_fmt, url):
+                if url in applied_urls:
                     skipped_count += 1
                     skip_reasons["already_applied"] += 1
                     last_processed_url = url
@@ -170,10 +174,16 @@ def main(dry_run: bool = False) -> None:
                 break
 
             if card is None:
+                scroll_attempts += 1
+                if scroll_attempts >= MAX_SCROLL_ATTEMPTS:
+                    logger.info("No new unprocessed job cards after %d scroll attempts. Stopping.", MAX_SCROLL_ATTEMPTS)
+                    break
                 _scroll_job_list(driver)
                 _scroll_job_list(driver)
                 rate_limit_actions(cfg)
                 continue
+
+            scroll_attempts = 0
 
             try:
                 last_processed_url = job_url
@@ -193,6 +203,7 @@ def main(dry_run: bool = False) -> None:
                         url,
                         existing=existing if tracking_fmt == "json" else None,
                     )
+                    applied_urls.add(url)
                     applied_count += 1
                     logger.info("Applied: %s @ %s", title, company)
                     rate_limit_after_application(cfg)
@@ -292,6 +303,4 @@ if __name__ == "__main__":
             print("Aborted by user.")
             sys.exit(0)
 
-    # Pass dry_run flag through; main() will read current config from get_config().
-    # We re-call get_config() inside main so non-CLI users keep the same behavior.
-    main(dry_run=dry_run_flag)
+    main(dry_run=dry_run_flag, cfg=cfg)

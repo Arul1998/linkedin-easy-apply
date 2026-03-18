@@ -4,7 +4,7 @@ No passwords or secrets in config files; credentials come from env only.
 """
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict
 

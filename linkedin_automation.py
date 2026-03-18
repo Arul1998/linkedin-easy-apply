@@ -344,7 +344,15 @@ def select_job_card(driver, card) -> bool:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", link)
         time.sleep(0.5)
         link.click()
-        time.sleep(2)
+        # Wait for the detail panel to actually load (up to 10s)
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR,
+                    "button.jobs-apply-button, [aria-label*='Easy Apply'], [class*='jobs-apply-button']"
+                ))
+            )
+        except Exception:
+            time.sleep(3)  # Fallback if button never appears
         return True
     except Exception:
         return False
@@ -398,54 +406,74 @@ def _click_apply_button(driver, btn) -> bool:
 
 
 def click_easy_apply_in_detail_panel(driver) -> bool:
-    """Click Easy Apply / In Apply / Apply button in the job detail (right) panel. Returns True if found and clicked."""
+    """Click Easy Apply / In Apply button in the job detail (right) panel. Returns True if found and clicked."""
     try:
-        time.sleep(2)
         scope = _get_detail_panel(driver)
         search_in = scope if scope else driver
+        logger.debug("Detail panel found: %s", scope is not None)
 
-        # 1) LinkedIn's known class for the apply button
+        # 1) Most reliable: aria-label contains "Easy Apply" (LinkedIn sets this on the apply button)
         for sel in [
-            "button.jobs-apply-button",
-            ".jobs-apply-button",
-            "button[class*='jobs-apply-button']",
-            "button.artdeco-button--primary",
-            "button[aria-label*='Apply'][aria-label*='job']",
             "button[aria-label*='Easy Apply']",
             "button[aria-label*='In Apply']",
-        ]:
-            btns = search_in.find_elements(By.CSS_SELECTOR, sel)
-            for b in btns:
-                if b.is_displayed() and _click_apply_button(driver, b):
-                    return True
-
-        # 2) By text (button or span inside button)
-        for xpath in [
-            ".//button[contains(., 'Easy Apply') or contains(., 'In Apply') or contains(., 'Apply')]",
-            ".//span[normalize-space()='Easy Apply']/ancestor::button[1]",
-            ".//span[normalize-space()='In Apply']/ancestor::button[1]",
-            ".//span[contains(., 'Apply')]/ancestor::button[1]",
-        ]:
-            btns = search_in.find_elements(By.XPATH, xpath)
-            for b in btns:
-                if b.is_displayed() and _click_apply_button(driver, b):
-                    return True
-
-        # 3) Full page fallback (in case detail panel wasn't found)
-        for sel in [
             "button.jobs-apply-button",
             "button[class*='jobs-apply-button']",
-            "//button[contains(., 'Easy Apply') or contains(., 'In Apply')]",
-            "//span[contains(., 'Easy Apply') or contains(., 'In Apply')]/ancestor::button[1]",
         ]:
-            by = By.CSS_SELECTOR if "button" in sel and not sel.startswith("//") else By.XPATH
-            btns = driver.find_elements(by, sel)
+            btns = search_in.find_elements(By.CSS_SELECTOR, sel)
+            logger.debug("Selector %r found %d buttons", sel, len(btns))
             for b in btns:
-                if b.is_displayed() and _click_apply_button(driver, b):
+                try:
+                    visible = driver.execute_script(
+                        "var r=arguments[0].getBoundingClientRect();"
+                        "return r.width>0&&r.height>0&&arguments[0].offsetParent!==null;", b
+                    )
+                except Exception:
+                    visible = b.is_displayed()
+                if visible and _click_apply_button(driver, b):
+                    logger.debug("Clicked apply button via selector %r", sel)
                     return True
 
+        # 2) By span text inside button — most stable across LinkedIn DOM changes
+        for xpath in [
+            ".//button[.//span[normalize-space()='Easy Apply']]",
+            ".//button[.//span[normalize-space()='In Apply']]",
+            ".//span[normalize-space()='Easy Apply']/ancestor::button[1]",
+            ".//span[normalize-space()='In Apply']/ancestor::button[1]",
+        ]:
+            btns = search_in.find_elements(By.XPATH, xpath)
+            logger.debug("XPath %r found %d buttons", xpath, len(btns))
+            for b in btns:
+                if _click_apply_button(driver, b):
+                    logger.debug("Clicked apply button via xpath %r", xpath)
+                    return True
+
+        # 3) Full page fallback using JS to find and click any Easy Apply button
+        clicked = driver.execute_script("""
+            var btns = Array.from(document.querySelectorAll('button'));
+            for (var b of btns) {
+                var label = (b.getAttribute('aria-label') || '').toLowerCase();
+                var text = (b.textContent || '').trim().toLowerCase();
+                if (label.includes('easy apply') || label.includes('in apply') ||
+                    text === 'easy apply' || text === 'in apply') {
+                    var r = b.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) {
+                        b.scrollIntoView({block:'center'});
+                        b.click();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        """)
+        if clicked:
+            logger.debug("Clicked apply button via JS fallback")
+            time.sleep(1)
+            return True
+
+        logger.warning("Easy Apply button not found on this job. Page URL: %s", driver.current_url)
         return False
     except Exception:
+        logger.exception("Exception in click_easy_apply_in_detail_panel")
         return False
 
 

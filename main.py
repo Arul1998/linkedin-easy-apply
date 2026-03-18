@@ -11,6 +11,8 @@ import time
 from collections import Counter
 from typing import Optional
 
+from dataclasses import asdict
+
 from config import AppConfig, get_config
 from linkedin_automation import (
     get_driver,
@@ -191,7 +193,7 @@ def main(dry_run: bool = False, cfg: Optional[AppConfig] = None) -> None:
                 title, company, url, status = apply_to_job(
                     driver,
                     card,
-                    cfg.saved_answers.__dict__,
+                    asdict(cfg.saved_answers),
                     cfg.resume_path,
                 )
                 if status == "applied":

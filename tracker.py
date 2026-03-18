@@ -49,10 +49,10 @@ def record_application(
     }
 
     if fmt == "csv":
-        file_exists = path.exists()
+        has_content = path.exists() and path.stat().st_size > 0
         with open(path, "a", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=["job_title", "company_name", "job_url", "date_applied"])
-            if not file_exists:
+            if not has_content:
                 writer.writeheader()
             writer.writerow(row)
         return
@@ -64,7 +64,9 @@ def record_application(
         json.dump(records, f, indent=2)
 
 
-def already_applied(file_path: str, fmt: str, job_url: str) -> bool:
-    """Check if we already have this job URL in the tracking file."""
-    records = load_existing_tracking(file_path, fmt)
+def already_applied(file_path: str, fmt: str, job_url: str, existing: list[dict[str, Any]] | None = None) -> bool:
+    """Check if we already have this job URL in the tracking file.
+    Pass `existing` (the in-memory list) to avoid a disk read on every call.
+    """
+    records = existing if existing is not None else load_existing_tracking(file_path, fmt)
     return any(r.get("job_url") == job_url for r in records)

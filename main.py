@@ -30,12 +30,12 @@ from tracker import record_application, load_existing_tracking
 logger = logging.getLogger("linkedin_easy_apply")
 
 
-def _configure_logging() -> None:
+def _configure_logging(debug: bool = False) -> None:
     """Configure root logging for the CLI run."""
     if logging.getLogger().handlers:
         return
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if debug else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
     )
 
@@ -61,8 +61,8 @@ def _scroll_job_list(driver) -> None:
         logger.debug("Failed to scroll job list.", exc_info=True)
 
 
-def main(dry_run: bool = False, cfg: Optional[AppConfig] = None) -> None:
-    _configure_logging()
+def main(dry_run: bool = False, cfg: Optional[AppConfig] = None, debug: bool = False) -> None:
+    _configure_logging(debug=debug)
     if cfg is None:
         cfg = get_config()
 
@@ -265,6 +265,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Show a one-time summary of filters and limits and ask for confirmation before applying.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable DEBUG logging to see which selectors are tried when finding the Apply button.",
+    )
     return parser.parse_args(argv)
 
 
@@ -273,7 +278,7 @@ if __name__ == "__main__":
     dry_run_flag = bool(args.dry_run)
 
     # Load config once so we can apply user-friendly overrides before running.
-    _configure_logging()
+    _configure_logging(debug=bool(args.debug))
     cfg = get_config()
 
     if args.keywords:
@@ -305,4 +310,4 @@ if __name__ == "__main__":
             print("Aborted by user.")
             sys.exit(0)
 
-    main(dry_run=dry_run_flag, cfg=cfg)
+    main(dry_run=dry_run_flag, cfg=cfg, debug=bool(args.debug))

@@ -594,17 +594,33 @@ def _fill_easy_apply_step(driver, saved_answers: dict, resume_path: str) -> str:
             except Exception:
                 pass
 
-        # Resume upload
+        # Resume upload — LinkedIn hides the <input type="file"> behind a styled button,
+        # so is_displayed() always returns False. We unhide it via JS, send the path, then
+        # re-hide to avoid visual glitches. Falls back to send_keys without JS if needed.
         if resume_path and Path(resume_path).exists():
+            abs_path = str(Path(resume_path).resolve())
+            uploaded = False
             try:
-                file_input = driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
-                for fi in file_input:
-                    if fi.is_displayed():
-                        fi.send_keys(str(Path(resume_path).resolve()))
-                        time.sleep(1)
+                file_inputs = driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+                for fi in file_inputs:
+                    try:
+                        driver.execute_script(
+                            "arguments[0].style.display='block';"
+                            "arguments[0].style.visibility='visible';"
+                            "arguments[0].style.opacity='1';",
+                            fi,
+                        )
+                        fi.send_keys(abs_path)
+                        time.sleep(2)  # Wait for LinkedIn to process and show the uploaded filename
+                        uploaded = True
+                        logger.debug("Resume uploaded via file input: %s", abs_path)
                         break
+                    except Exception:
+                        pass
             except Exception:
                 pass
+            if not uploaded:
+                logger.warning("Could not find a file input to upload resume. Path: %s", abs_path)
 
         # Cover letter textarea
         if saved_answers.get("cover_letter"):

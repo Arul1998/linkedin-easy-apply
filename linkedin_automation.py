@@ -3,6 +3,7 @@ LinkedIn automation: login, job search, Easy Apply flow.
 Uses Selenium with Chrome; rate limiting applied by caller.
 """
 import logging
+import re
 import time
 import urllib.parse
 from pathlib import Path
@@ -500,6 +501,26 @@ def get_job_url_from_card(card) -> str:
         return link.get_attribute("href") or ""
     except Exception:
         return ""
+
+
+def normalize_job_url(url: str) -> str:
+    """Canonicalize a job URL to https://www.linkedin.com/jobs/view/<id>/.
+
+    Card hrefs carry per-session tracking params (refId, trackingId, eBP...),
+    so raw URLs for the same job differ across runs and break dedup.
+    """
+    if not url:
+        return ""
+    match = re.search(r"/jobs/view/(\d+)", url)
+    if match:
+        return f"https://www.linkedin.com/jobs/view/{match.group(1)}/"
+    try:
+        job_id = parse_qs(urlparse(url).query).get("currentJobId", [""])[0]
+        if job_id.isdigit():
+            return f"https://www.linkedin.com/jobs/view/{job_id}/"
+    except Exception:
+        pass
+    return url.split("?")[0]
 
 
 def select_job_card(driver, card) -> bool:

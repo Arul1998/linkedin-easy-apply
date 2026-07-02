@@ -4,6 +4,7 @@ from linkedin_automation import (
     build_jobs_search_url,
     _normalize_work_type,
     classify_modal_button_label,
+    normalize_job_url,
 )
 from errors import humanize_skip_reason
 
@@ -42,6 +43,30 @@ def test_normalize_work_type_aliases():
 def test_humanize_skip_reason():
     assert "duplicate" in humanize_skip_reason("already_applied").lower()
     assert humanize_skip_reason("applied") == "Application submitted successfully"
+
+
+def test_normalize_job_url_strips_tracking_params():
+    url = "https://www.linkedin.com/jobs/view/4012345678/?eBP=abc&refId=xyz&trackingId=123"
+    assert normalize_job_url(url) == "https://www.linkedin.com/jobs/view/4012345678/"
+
+
+def test_normalize_job_url_same_job_different_params_matches():
+    a = normalize_job_url("https://www.linkedin.com/jobs/view/4012345678/?refId=aaa")
+    b = normalize_job_url("https://www.linkedin.com/jobs/view/4012345678?trackingId=bbb")
+    assert a == b
+
+
+def test_normalize_job_url_uses_current_job_id_param():
+    url = "https://www.linkedin.com/jobs/search/?currentJobId=4012345678&keywords=dev"
+    assert normalize_job_url(url) == "https://www.linkedin.com/jobs/view/4012345678/"
+
+
+def test_normalize_job_url_falls_back_to_stripping_query():
+    assert normalize_job_url("") == ""
+    assert (
+        normalize_job_url("https://www.linkedin.com/jobs/collections/recommended/?foo=1")
+        == "https://www.linkedin.com/jobs/collections/recommended/"
+    )
 
 
 def test_classify_modal_button_label():

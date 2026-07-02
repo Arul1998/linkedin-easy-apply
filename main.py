@@ -23,6 +23,7 @@ from linkedin_automation import (
     get_job_cards,
     job_has_easy_apply,
     get_job_url_from_card,
+    normalize_job_url,
     apply_to_job,
 )
 from tracker import record_application, load_existing_tracking
@@ -165,12 +166,15 @@ def main(
             return
 
         existing = load_existing_tracking(tracking_file, tracking_fmt)
-        applied_urls: set[str] = {r.get("job_url", "") for r in existing}
+        applied_urls: set[str] = {normalize_job_url(r.get("job_url", "")) for r in existing}
+        applied_urls.discard("")
         applied_count = 0
         skipped_count = 0
         skip_reasons: Counter[str] = Counter()
         max_applications = cfg.max_applications or 0
-        last_processed_url: Optional[str] = None
+        # Every URL handled this run (applied, skipped, or already tracked),
+        # so skipped jobs are never re-picked and the scan can move past them.
+        processed_urls: set[str] = set()
         scroll_attempts = 0
         MAX_SCROLL_ATTEMPTS = 10
         target_label = str(max_applications) if max_applications > 0 else "no limit"
@@ -206,17 +210,17 @@ def main(
             card = None
             job_url = None
             for c in cards:
-                url = get_job_url_from_card(c)
+                url = normalize_job_url(get_job_url_from_card(c))
                 if not url:
                     continue
-                if url == last_processed_url:
+                if url in processed_urls:
                     continue
                 if url in applied_urls:
+                    processed_urls.add(url)
                     skipped_count += 1
                     skip_reasons["already_applied"] += 1
-                    last_processed_url = url
                     logger.debug("Skipping already applied job: %s", url)
-                    break
+                    continue
                 card = c
                 job_url = url
                 break
@@ -234,7 +238,7 @@ def main(
             scroll_attempts = 0
 
             try:
-                last_processed_url = job_url
+                processed_urls.add(job_url)
                 rate_limit_actions(cfg)
                 title, company, url, status = apply_to_job(
                     driver,
@@ -248,11 +252,11 @@ def main(
                         tracking_fmt,
                         title,
                         company,
-                        url,
+                        job_url,
                         existing=existing if tracking_fmt == "json" else None,
                         status="applied",
                     )
-                    applied_urls.add(url)
+                    applied_urls.add(job_url)
                     applied_count += 1
                     logger.info("Applied (%s/%s): %s @ %s", applied_count, target_label, title, company)
                     rate_limit_after_application(cfg)

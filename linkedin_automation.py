@@ -17,12 +17,16 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
+from errors import LoginResult
+from session_store import load_cookies, save_cookies
+
 
 logger = logging.getLogger("linkedin_easy_apply.automation")
 
 # Timeout for page loads and element appearance
 WAIT_TIMEOUT = 15
-PAGE_LOAD_WAIT = 5
+PAGE_LOAD_WAIT = 3
+EASY_APPLY_MAX_STEPS = 12
 
 # Centralized DOM selectors to ease maintenance when LinkedIn changes layout.
 JOB_LIST_SELECTORS = [
@@ -47,6 +51,84 @@ EASY_APPLY_ARIA_SELECTORS = [
     "[aria-label*='easy apply']",
     "[aria-label*='In Apply']",
 ]
+
+EASY_APPLY_MODAL_SELECTORS = [
+    "div.jobs-easy-apply-modal",
+    "div[data-test-modal]",
+    "div.artdeco-modal[role='dialog']",
+    "div[role='dialog']",
+]
+
+MODAL_ACTION_SELECTORS = {
+    "submit": [
+        "button[aria-label='Submit application']",
+        "button[aria-label*='Submit application']",
+        "button[aria-label*='Submit']",
+        "footer button.artdeco-button--primary",
+        ".jobs-easy-apply-footer button.artdeco-button--primary",
+    ],
+    "review": [
+        "button[aria-label='Review your application']",
+        "button[aria-label*='Review your application']",
+        "button[aria-label*='Review']",
+    ],
+    "next": [
+        "button[aria-label='Continue to next step']",
+        "button[aria-label*='Continue to next step']",
+        "button[aria-label*='Next step']",
+        "button[aria-label*='Continue']",
+    ],
+}
+
+MODAL_ACTION_XPATHS = {
+    "submit": [
+        ".//button[.//span[normalize-space()='Submit application']]",
+        ".//button[.//span[normalize-space()='Submit']]",
+        ".//span[normalize-space()='Submit application']/ancestor::button[1]",
+        ".//span[normalize-space()='Submit']/ancestor::button[1]",
+    ],
+    "review": [
+        ".//button[.//span[normalize-space()='Review']]",
+        ".//button[contains(translate(., 'REVIEW', 'review'), 'review')]",
+        ".//span[normalize-space()='Review']/ancestor::button[1]",
+    ],
+    "next": [
+        ".//button[.//span[normalize-space()='Next']]",
+        ".//button[.//span[normalize-space()='Continue']]",
+        ".//button[contains(translate(., 'NEXT', 'next'), 'next')]",
+        ".//span[normalize-space()='Next']/ancestor::button[1]",
+        ".//span[normalize-space()='Continue']/ancestor::button[1]",
+    ],
+}
+
+APPLICATION_SENT_PHRASES = (
+    "your application was sent",
+    "application was sent",
+    "application submitted",
+    "successfully submitted",
+)
+
+
+def classify_modal_button_label(label: str) -> str | None:
+    """Map visible button text / aria-label to a modal action."""
+    lower = " ".join(label.lower().split())
+    if not lower:
+        return None
+    if any(token in lower for token in ("discard", "cancel", "close", "back")):
+        return None
+    if "submit application" in lower or lower == "submit":
+        return "submit"
+    if "review your application" in lower or lower == "review":
+        return "review"
+    if (
+        "continue to next step" in lower
+        or lower in {"next", "continue"}
+        or "next step" in lower
+    ):
+        return "next"
+    if lower.endswith(" next"):
+        return "next"
+    return None
 
 
 def get_driver(headless: bool = False):
@@ -73,26 +155,111 @@ def _wait_clickable(driver, by, value, timeout=WAIT_TIMEOUT):
     return WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((by, value)))
 
 
-def login(driver, email: str, password: str) -> bool:
-    """Log into LinkedIn. Returns True on success."""
+def _find_visible(driver, by, value):
+    for el in driver.find_elements(by, value):
+        if el.is_displayed():
+            return el
+    return None
+
+
+def _wait_for_url_change(driver, previous_url: str, timeout: int = WAIT_TIMEOUT) -> None:
+    try:
+        WebDriverWait(driver, timeout).until(lambda d: d.current_url != previous_url)
+    except Exception:
+        logger.debug("URL did not change within %ss (was %s)", timeout, previous_url)
+
+
+def _is_challenge_page(driver) -> bool:
+    url = driver.current_url.lower()
+    return any(token in url for token in ("checkpoint", "challenge", "captcha", "verification"))
+
+
+def _login_error_on_page(driver) -> str:
+    for sel in ("#error-for-username", "#error-for-password", ".form__label--error", "[role='alert']"):
+        for el in driver.find_elements(By.CSS_SELECTOR, sel):
+            text = (el.text or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _pause_for_user_challenge() -> None:
+    print(
+        "\n>>> LinkedIn verification detected (CAPTCHA / 2FA / security check).\n"
+        ">>> Complete it in the Chrome window, then press Enter here to continue...\n"
+    )
+    input()
+
+
+def login(driver, email: str, password: str, pause_on_challenge: bool = False) -> LoginResult:
+    """Log into LinkedIn. Returns structured result with user-friendly message."""
     driver.get("https://www.linkedin.com/login")
     time.sleep(PAGE_LOAD_WAIT)
 
     try:
-        email_el = _wait(driver, By.ID, "username")
+        email_el = _find_visible(driver, By.CSS_SELECTOR, "input[type='email']")
+        if email_el is None:
+            email_el = _wait(driver, By.ID, "username")
         email_el.clear()
         email_el.send_keys(email)
-        pass_el = driver.find_element(By.ID, "password")
+
+        pass_el = _find_visible(driver, By.CSS_SELECTOR, "input[type='password']")
+        if pass_el is None:
+            pass_el = driver.find_element(By.ID, "password")
         pass_el.clear()
         pass_el.send_keys(password)
+
+        previous_url = driver.current_url
         pass_el.send_keys(Keys.RETURN)
+        _wait_for_url_change(driver, previous_url, timeout=10)
         time.sleep(PAGE_LOAD_WAIT)
-        # Check we're not on login page (could add CAPTCHA check)
+
+        if _is_challenge_page(driver):
+            if pause_on_challenge:
+                _pause_for_user_challenge()
+                time.sleep(PAGE_LOAD_WAIT)
+                if not _is_challenge_page(driver) and "login" not in driver.current_url.lower():
+                    return LoginResult.ok()
+            return LoginResult.fail("challenge_required")
+
         if "login" in driver.current_url.lower():
-            return False
-        return True
-    except Exception:
-        return False
+            page_error = _login_error_on_page(driver)
+            if page_error:
+                logger.warning("LinkedIn login page error: %s", page_error)
+            return LoginResult.fail("invalid_credentials")
+
+        return LoginResult.ok()
+    except Exception as exc:
+        logger.exception("Login failed due to an unexpected error.")
+        if "username" in str(exc).lower() or "email" in str(exc).lower():
+            return LoginResult.fail("form_not_found", str(exc))
+        return LoginResult.fail("unknown", str(exc))
+
+
+def ensure_logged_in(
+    driver,
+    email: str,
+    password: str,
+    *,
+    use_session: bool = True,
+    fresh_login: bool = False,
+    pause_on_challenge: bool = False,
+) -> LoginResult:
+    """Reuse saved session when possible; otherwise log in and persist cookies."""
+    if use_session and not fresh_login:
+        if load_cookies(driver):
+            if _is_challenge_page(driver):
+                if pause_on_challenge:
+                    _pause_for_user_challenge()
+                    if not _is_challenge_page(driver):
+                        return LoginResult.ok()
+                return LoginResult.fail("challenge_required")
+            return LoginResult.ok()
+
+    result = login(driver, email, password, pause_on_challenge=pause_on_challenge)
+    if result.success:
+        save_cookies(driver)
+    return result
 
 
 # Work type: 1=On-site, 2=Remote, 3=Hybrid (can pass "1"/"2"/"3" or "On-site"/"Remote"/"Hybrid")
@@ -405,6 +572,180 @@ def _click_apply_button(driver, btn) -> bool:
     return False
 
 
+def _button_label(btn) -> str:
+    aria = (btn.get_attribute("aria-label") or "").strip()
+    text = (btn.text or "").strip()
+    return f"{aria} {text}".strip()
+
+
+def _is_button_interactable(driver, btn) -> bool:
+    try:
+        return bool(
+            driver.execute_script(
+                "var b=arguments[0];"
+                "if(!b||b.disabled||b.getAttribute('aria-disabled')==='true') return false;"
+                "var r=b.getBoundingClientRect();"
+                "return r.width>0&&r.height>0&&b.offsetParent!==null;",
+                btn,
+            )
+        )
+    except Exception:
+        return btn.is_displayed() and btn.is_enabled()
+
+
+def _get_easy_apply_modal(driver):
+    """Return the visible Easy Apply modal, or None if it is not open."""
+    for sel in EASY_APPLY_MODAL_SELECTORS:
+        for el in driver.find_elements(By.CSS_SELECTOR, sel):
+            if el.is_displayed():
+                return el
+    return None
+
+
+def _get_easy_apply_scope(driver):
+    """Return the Easy Apply modal element, or the whole page as fallback for buttons."""
+    modal = _get_easy_apply_modal(driver)
+    return modal if modal is not None else driver
+
+
+def _find_in_modal(scope, by, value):
+    """Find elements relative to the Easy Apply modal only."""
+    if by == By.XPATH and not value.startswith("."):
+        value = "." + value
+    return scope.find_elements(by, value)
+
+
+def _find_modal_action_button(driver, scope, action: str):
+    """Find Next / Review / Submit inside the Easy Apply modal."""
+    for sel in MODAL_ACTION_SELECTORS.get(action, []):
+        for btn in scope.find_elements(By.CSS_SELECTOR, sel):
+            if _is_button_interactable(driver, btn):
+                label = _button_label(btn)
+                classified = classify_modal_button_label(label)
+                if classified == action or (action == "submit" and classified is None and "submit" in label.lower()):
+                    logger.debug("Found %s button via selector %r (%r)", action, sel, label)
+                    return btn
+
+    for xpath in MODAL_ACTION_XPATHS.get(action, []):
+        for btn in scope.find_elements(By.XPATH, xpath):
+            if _is_button_interactable(driver, btn):
+                logger.debug("Found %s button via xpath %r (%r)", action, xpath, _button_label(btn))
+                return btn
+
+    for btn in scope.find_elements(By.TAG_NAME, "button"):
+        if not _is_button_interactable(driver, btn):
+            continue
+        if classify_modal_button_label(_button_label(btn)) == action:
+            logger.debug("Found %s button via label scan (%r)", action, _button_label(btn))
+            return btn
+
+    return None
+
+
+def _application_submitted(driver) -> bool:
+    """Detect LinkedIn confirmation that the application was sent."""
+    try:
+        scope = _get_easy_apply_scope(driver)
+        text = (scope.text or "").lower()
+        if any(phrase in text for phrase in APPLICATION_SENT_PHRASES):
+            return True
+    except Exception:
+        pass
+    page = driver.page_source.lower()
+    return any(phrase in page for phrase in APPLICATION_SENT_PHRASES)
+
+
+def _click_modal_action(driver, action: str):
+    scope = _get_easy_apply_scope(driver)
+    btn = _find_modal_action_button(driver, scope, action)
+    if btn and _click_apply_button(driver, btn):
+        return True
+    return False
+
+
+def _advance_easy_apply_step(driver) -> str:
+    """
+    Click the correct footer button in the Easy Apply modal.
+    Priority: Submit > Review > Next, matching popular LinkedIn bot patterns.
+    """
+    if _application_submitted(driver):
+        logger.debug("Application already marked as sent on page.")
+        return "submitted"
+
+    if _click_modal_action(driver, "submit"):
+        time.sleep(2)
+        if _application_submitted(driver):
+            return "submitted"
+        # Some flows need a second submit on the confirmation screen.
+        if _click_modal_action(driver, "submit"):
+            time.sleep(2)
+        return "submitted" if _application_submitted(driver) else "next"
+
+    if _click_modal_action(driver, "review"):
+        time.sleep(2)
+        if _click_modal_action(driver, "submit"):
+            time.sleep(2)
+        return "submitted" if _application_submitted(driver) else "next"
+
+    if _click_modal_action(driver, "next"):
+        time.sleep(2)
+        return "next"
+
+    # JS fallback: scan modal footer buttons from right to left (primary action is usually last).
+    clicked = driver.execute_script(
+        """
+        const modal = document.querySelector('.jobs-easy-apply-modal')
+            || document.querySelector('[data-test-modal]')
+            || document.querySelector('div[role="dialog"]');
+        const root = modal || document;
+        const buttons = Array.from(root.querySelectorAll('button')).filter((b) => {
+            const r = b.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
+        });
+        const labels = buttons.map((b) => ({
+            btn: b,
+            label: ((b.getAttribute('aria-label') || '') + ' ' + (b.innerText || '')).toLowerCase(),
+        }));
+        const priority = [
+            ['submit application', 'submit'],
+            ['review your application', 'review'],
+            ['continue to next step', 'next', 'continue'],
+        ];
+        for (const keys of priority) {
+            const match = labels.find(({label}) => keys.some((k) => label.includes(k)));
+            if (match) {
+                match.btn.scrollIntoView({block: 'center'});
+                match.btn.click();
+                return keys[0];
+            }
+        }
+        const footerPrimary = root.querySelector('.jobs-easy-apply-footer button.artdeco-button--primary');
+        if (footerPrimary) {
+            footerPrimary.scrollIntoView({block: 'center'});
+            footerPrimary.click();
+            return 'footer-primary';
+        }
+        return '';
+        """
+    )
+    if clicked:
+        logger.debug("Clicked modal action via JS fallback: %s", clicked)
+        time.sleep(2)
+        if "submit" in str(clicked) or _application_submitted(driver):
+            return "submitted"
+        return "next"
+
+    logger.warning(
+        "No Next/Review/Submit button found in Easy Apply modal. Visible buttons: %s",
+        [
+            _button_label(b)
+            for b in _get_easy_apply_scope(driver).find_elements(By.TAG_NAME, "button")
+            if _is_button_interactable(driver, b)
+        ][:8],
+    )
+    return "skip"
+
+
 def click_easy_apply_in_detail_panel(driver) -> bool:
     """Click Easy Apply / In Apply button in the job detail (right) panel. Returns True if found and clicked."""
     try:
@@ -477,7 +818,7 @@ def click_easy_apply_in_detail_panel(driver) -> bool:
         return False
 
 
-def _fill_phone(driver, saved_answers: dict) -> None:
+def _fill_phone(scope, saved_answers: dict) -> None:
     """Fill Mobile phone number and optionally country code in Contact info / Easy Apply modal."""
     phone = saved_answers.get("phone") or ""
     phone = str(phone).strip()
@@ -487,18 +828,26 @@ def _fill_phone(driver, saved_answers: dict) -> None:
     country_code = str(saved_answers.get("phone_country_code") or "").strip()
     if country_code:
         try:
-            for trigger in driver.find_elements(By.XPATH, "//*[contains(.,'Phone country code') or contains(.,'Country code')]/following::button[1] | //*[contains(.,'Phone country code')]/following::*[@role='combobox'][1]"):
+            for trigger in _find_in_modal(
+                scope,
+                By.XPATH,
+                ".//*[contains(.,'Phone country code') or contains(.,'Country code')]/following::button[1]"
+                " | .//*[contains(.,'Phone country code')]/following::*[@role='combobox'][1]",
+            ):
                 if trigger.is_displayed():
                     trigger.click()
                     time.sleep(0.5)
-                    for opt in driver.find_elements(By.XPATH, f"//*[contains(., '{country_code}')]"):
-                        if opt.is_displayed() and (country_code in opt.text or (len(country_code) <= 4 and country_code in opt.text)):
+                    for opt in scope.find_elements(By.XPATH, f".//*[contains(., '{country_code}')]"):
+                        if opt.is_displayed() and (
+                            country_code in opt.text
+                            or (len(country_code) <= 4 and country_code in opt.text)
+                        ):
                             opt.click()
                             time.sleep(0.3)
                             break
                     break
         except Exception:
-            pass
+            logger.debug("Phone country code selection failed.", exc_info=True)
     for sel in [
         "input[type='tel']",
         "input[placeholder*='Mobile phone']",
@@ -508,8 +857,7 @@ def _fill_phone(driver, saved_answers: dict) -> None:
         "input[name*='phone']",
         "input[name*='mobile']",
     ]:
-        inputs = driver.find_elements(By.CSS_SELECTOR, sel)
-        for inp in inputs:
+        for inp in _find_in_modal(scope, By.CSS_SELECTOR, sel):
             if not inp.is_displayed():
                 continue
             try:
@@ -520,14 +868,13 @@ def _fill_phone(driver, saved_answers: dict) -> None:
             except Exception:
                 pass
     for xpath in [
-        "//label[contains(.,'Mobile phone') or contains(.,'Phone number')]/following::input[1]",
-        "//*[contains(.,'Mobile phone number')]/following::input[1]",
-        "//input[contains(@placeholder,'phone') or contains(@placeholder,'Phone')]",
-        "//input[contains(@aria-label,'phone') or contains(@aria-label,'Phone')]",
+        ".//label[contains(.,'Mobile phone') or contains(.,'Phone number')]/following::input[1]",
+        ".//*[contains(.,'Mobile phone number')]/following::input[1]",
+        ".//input[contains(@placeholder,'phone') or contains(@placeholder,'Phone')]",
+        ".//input[contains(@aria-label,'phone') or contains(@aria-label,'Phone')]",
     ]:
         try:
-            inputs = driver.find_elements(By.XPATH, xpath)
-            for inp in inputs:
+            for inp in _find_in_modal(scope, By.XPATH, xpath):
                 if inp.is_displayed():
                     inp.clear()
                     inp.send_keys(phone if len(phone) <= 20 else digits_only)
@@ -537,72 +884,124 @@ def _fill_phone(driver, saved_answers: dict) -> None:
             pass
 
 
-def _fill_contact_info(driver, saved_answers: dict) -> None:
-    """Fill first name, last name, and email in Contact info / Easy Apply modal."""
-    for label_text, key in [
-        ("First name", "first_name"),
-        ("Last name", "last_name"),
-        ("Email", "email"),
-        ("Email address", "email"),
-    ]:
+def _fill_contact_info(scope, saved_answers: dict) -> None:
+    """Fill first name, last name, and email inside the Easy Apply modal only."""
+    field_map = [
+        ("First name", "first_name", ["input[name*='first']", "input[id*='first']"]),
+        ("Last name", "last_name", ["input[name*='last']", "input[id*='last']"]),
+        ("Email", "email", ["input[type='email']", "input[name*='email']", "input[id*='email']"]),
+        ("Email address", "email", ["input[type='email']", "input[name*='email']", "input[id*='email']"]),
+    ]
+    seen_keys: set[str] = set()
+    for label_text, key, css_selectors in field_map:
+        if key in seen_keys:
+            continue
         val = (saved_answers.get(key) or "").strip()
         if not val:
             continue
+        seen_keys.add(key)
+        filled = False
         try:
-            inputs = driver.find_elements(
+            for inp in _find_in_modal(
+                scope,
                 By.XPATH,
-                f"//label[contains(.,'{label_text}')]/following::input[1] | //*[contains(.,'{label_text}')]/following::input[1]"
-            )
-            for inp in inputs:
+                f".//label[contains(.,'{label_text}')]/following::input[1]",
+            ):
                 if inp.is_displayed():
                     inp.clear()
                     inp.send_keys(val)
                     time.sleep(0.2)
+                    filled = True
                     break
         except Exception:
-            pass
-        for sel in [f"input[name*='{key.replace('_','')}']", f"input[id*='{key.replace('_','')}']", "input[type='email']"]:
-            if key != "email" and "email" in sel:
-                continue
+            logger.debug("Label-based fill failed for %r", label_text, exc_info=True)
+        if filled:
+            continue
+        for sel in css_selectors:
             try:
-                inps = driver.find_elements(By.CSS_SELECTOR, sel)
-                for inp in inps:
+                for inp in _find_in_modal(scope, By.CSS_SELECTOR, sel):
                     if inp.is_displayed():
                         inp.clear()
                         inp.send_keys(val)
                         time.sleep(0.2)
+                        filled = True
                         break
+                if filled:
+                    break
             except Exception:
                 pass
+
+
+def _fill_text_by_label(scope, label_text: str, value: str) -> None:
+    val = str(value or "").strip()
+    if not val:
+        return
+    try:
+        for inp in _find_in_modal(
+            scope,
+            By.XPATH,
+            f".//label[contains(.,'{label_text}')]/following::input[1]",
+        ):
+            if inp.is_displayed():
+                inp.clear()
+                inp.send_keys(val)
+                time.sleep(0.2)
+                return
+    except Exception:
+        logger.debug("Could not fill field for label %r", label_text, exc_info=True)
+
+
+def _fill_yes_no_question(scope, question_hint: str, answer: str) -> None:
+    """Select Yes/No for sponsorship-style radio questions inside the modal."""
+    val = str(answer or "").strip().lower()
+    if val not in ("yes", "no"):
+        return
+    try:
+        xpath = (
+            f".//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), "
+            f"'{question_hint.lower()}')]/following::label[contains(., '{answer.capitalize()}')][1]"
+        )
+        for opt in _find_in_modal(scope, By.XPATH, xpath):
+            if opt.is_displayed():
+                opt.click()
+                time.sleep(0.2)
+                return
+    except Exception:
+        logger.debug("Could not answer yes/no question %r", question_hint, exc_info=True)
 
 
 def _fill_easy_apply_step(driver, saved_answers: dict, resume_path: str) -> str:
     """One step: fill visible fields then return 'next', 'submitted', or 'skip'."""
     try:
-        _fill_contact_info(driver, saved_answers)
-        _fill_phone(driver, saved_answers)
+        modal = _get_easy_apply_modal(driver)
+        if modal is None:
+            logger.warning("Easy Apply modal is not open; will only try footer buttons.")
+            return _advance_easy_apply_step(driver)
+
+        _fill_contact_info(modal, saved_answers)
+        _fill_phone(modal, saved_answers)
 
         # Optional: city, cover letter, etc.
         if saved_answers.get("city"):
             try:
-                city_input = driver.find_elements(By.CSS_SELECTOR, "input[id*='city'], input[name*='city'], input[placeholder*='City']")
-                for inp in city_input:
+                for inp in _find_in_modal(
+                    modal,
+                    By.CSS_SELECTOR,
+                    "input[id*='city'], input[name*='city'], input[placeholder*='City']",
+                ):
                     if inp.is_displayed():
                         inp.clear()
                         inp.send_keys(saved_answers["city"])
                         break
             except Exception:
-                pass
+                logger.debug("City fill failed.", exc_info=True)
 
-        # Resume upload — LinkedIn hides the <input type="file"> behind a styled button,
-        # so is_displayed() always returns False. We unhide it via JS, send the path, then
-        # re-hide to avoid visual glitches. Falls back to send_keys without JS if needed.
+        # Resume upload — scoped to modal only
         if resume_path and Path(resume_path).exists():
             abs_path = str(Path(resume_path).resolve())
             uploaded = False
             try:
-                file_inputs = driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
-                for fi in file_inputs:
+                for fi in _find_in_modal(modal, By.CSS_SELECTOR, "input[type='file']"):
                     try:
                         driver.execute_script(
                             "arguments[0].style.display='block';"
@@ -611,77 +1010,84 @@ def _fill_easy_apply_step(driver, saved_answers: dict, resume_path: str) -> str:
                             fi,
                         )
                         fi.send_keys(abs_path)
-                        time.sleep(2)  # Wait for LinkedIn to process and show the uploaded filename
+                        time.sleep(2)
                         uploaded = True
                         logger.debug("Resume uploaded via file input: %s", abs_path)
                         break
                     except Exception:
                         pass
             except Exception:
-                pass
+                logger.debug("Resume upload failed.", exc_info=True)
             if not uploaded:
                 logger.warning("Could not find a file input to upload resume. Path: %s", abs_path)
 
         # Cover letter textarea
         if saved_answers.get("cover_letter"):
             try:
-                ta = driver.find_elements(By.CSS_SELECTOR, "textarea")
-                for t in ta:
-                    if t.is_displayed() and "cover" in (t.get_attribute("name") or t.get_attribute("id") or "").lower():
+                for t in _find_in_modal(modal, By.CSS_SELECTOR, "textarea"):
+                    if t.is_displayed() and "cover" in (
+                        t.get_attribute("name") or t.get_attribute("id") or ""
+                    ).lower():
                         t.clear()
                         t.send_keys(saved_answers["cover_letter"])
                         break
             except Exception:
-                pass
+                logger.debug("Cover letter fill failed.", exc_info=True)
+
+        if saved_answers.get("salary"):
+            _fill_text_by_label(modal, "salary", saved_answers["salary"])
+            _fill_text_by_label(modal, "compensation", saved_answers["salary"])
+            _fill_text_by_label(modal, "desired salary", saved_answers["salary"])
+
+        if saved_answers.get("sponsorship"):
+            _fill_yes_no_question(modal, "sponsorship", saved_answers["sponsorship"])
+            _fill_yes_no_question(modal, "visa", saved_answers["sponsorship"])
+            _fill_yes_no_question(modal, "work authorization", saved_answers["sponsorship"])
 
         # Start date (dropdown or input)
         if saved_answers.get("start_date"):
             try:
                 start_val = saved_answers["start_date"]
-                # Try dropdown: click and pick option containing our value
-                dropdowns = driver.find_elements(By.CSS_SELECTOR, "select, [role='listbox']")
-                for dd in dropdowns:
+                for dd in _find_in_modal(modal, By.CSS_SELECTOR, "select, [role='listbox']"):
                     if not dd.is_displayed():
                         continue
-                    label = driver.find_elements(By.XPATH, "//label[contains(.,'start') or contains(.,'Start') or contains(.,'available')]")
+                    label = _find_in_modal(
+                        modal,
+                        By.XPATH,
+                        ".//label[contains(.,'start') or contains(.,'Start') or contains(.,'available')]",
+                    )
                     if dd.get_attribute("id") or (label and dd.location == label[0].location):
                         try:
                             dd.click()
                             time.sleep(0.5)
-                            opts = driver.find_elements(By.XPATH, f"//*[contains(translate(., '{start_val[:4].upper()}', '{start_val[:4].lower()}'), '{start_val[:4].lower()}')]")
-                            for o in opts:
+                            for o in _find_in_modal(
+                                modal,
+                                By.XPATH,
+                                f".//*[contains(translate(., '{start_val[:4].upper()}', "
+                                f"'{start_val[:4].lower()}'), '{start_val[:4].lower()}')]",
+                            ):
                                 if o.is_displayed():
                                     o.click()
                                     break
                         except Exception:
                             pass
                         break
-                # Fallback: input with placeholder/label about date
-                inputs = driver.find_elements(By.XPATH, "//input[contains(@placeholder,'date') or contains(@placeholder,'Date') or contains(@id,'start')]")
-                for inp in inputs:
+                for inp in _find_in_modal(
+                    modal,
+                    By.XPATH,
+                    ".//input[contains(@placeholder,'date') or contains(@placeholder,'Date') or contains(@id,'start')]",
+                ):
                     if inp.is_displayed():
                         inp.clear()
                         inp.send_keys(start_val)
                         break
             except Exception:
-                pass
+                logger.debug("Start date fill failed.", exc_info=True)
 
-        # Next (e.g. past "Your profile matches" screen) or Submit
-        next_btns = driver.find_elements(By.XPATH, "//button[contains(translate(., 'NEXT', 'next'), 'next')]")
-        submit_btns = driver.find_elements(By.XPATH, "//button[contains(translate(., 'SUBMIT', 'submit'), 'submit')]")
-        if not submit_btns:
-            submit_btns = driver.find_elements(By.XPATH, "//button[contains(., 'Submit')]")
-
-        if next_btns and next_btns[0].is_displayed():
-            next_btns[0].click()
-            time.sleep(2)
-            return "next"
-        if submit_btns and submit_btns[0].is_displayed():
-            submit_btns[0].click()
-            time.sleep(2)
-            return "submitted"
-        return "skip"
+        # Advance the Easy Apply wizard (Submit / Review / Next)
+        return _advance_easy_apply_step(driver)
     except Exception:
+        logger.exception("Error while filling Easy Apply step.")
         return "error"
 
 
@@ -691,11 +1097,20 @@ def fill_easy_apply_modal(driver, saved_answers: dict, resume_path: str) -> str:
     Clicks Next to get past 'Your profile matches' and similar screens, then fills and submits.
     Returns: 'submitted' | 'next' (gave up after max steps) | 'skip' | 'error'
     """
-    time.sleep(2)
-    max_steps = 5
-    for _ in range(max_steps):
+    try:
+        WebDriverWait(driver, WAIT_TIMEOUT).until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, ".jobs-easy-apply-modal, div[role='dialog'], [data-test-modal]")
+            )
+        )
+    except Exception:
+        logger.debug("Easy Apply modal container not detected immediately.", exc_info=True)
+    time.sleep(1.5)
+    max_steps = EASY_APPLY_MAX_STEPS
+    for step in range(max_steps):
         result = _fill_easy_apply_step(driver, saved_answers, resume_path)
-        if result == "submitted":
+        logger.debug("Easy Apply step %d/%d -> %s", step + 1, max_steps, result)
+        if result == "submitted" or _application_submitted(driver):
             return "submitted"
         if result == "skip":
             return "skip"
@@ -754,7 +1169,7 @@ def apply_to_job(
     time.sleep(2)
     result = fill_easy_apply_modal(driver, saved_answers, resume_path or "")
 
-    if result == "submitted":
+    if result == "submitted" or _application_submitted(driver):
         close_modal(driver)
         return job_title, company_name, job_url, "applied"
     if result == "next":

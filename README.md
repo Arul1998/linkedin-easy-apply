@@ -229,19 +229,45 @@ Increase these if you want to lower the risk of detection (e.g. 3–5 s for acti
 ```
 linkedin-easy-apply/
 ├── .env.example       # Example env (copy to .env)
-├── .gitignore         # Includes .env
+├── .gitignore         # Includes .env and .linkedin_session/
 ├── config.example.json
 ├── config.py          # Loads config from env + optional config.json
+├── errors.py          # User-friendly status messages
+├── session_store.py   # Saved LinkedIn session cookies
 ├── linkedin_automation.py  # Login, search, Easy Apply (Selenium)
 ├── main.py            # Entry point, rate limiting, tracking loop
 ├── tracker.py         # CSV/JSON application tracking
+├── tests/             # Automated tests (pytest)
 ├── requirements.txt
+├── requirements-dev.txt
 └── README.md
 ```
 
 ## Troubleshooting
 
-- **Login fails**: Check email/password in `.env`; ensure no 2FA or use an app password if required.
+- **Login fails**: Check email/password in `.env`. If LinkedIn shows CAPTCHA or 2FA, re-run with `--pause-on-challenge`. Use `--fresh-login` to ignore a stale saved session.
+- **Validate setup without browser**: `python main.py --validate-only`
 - **No jobs / wrong jobs**: Adjust `keywords` and `location` in config or env; search uses LinkedIn’s built-in Easy Apply filter.
-- **Applications not submitted**: Many Easy Apply forms have multiple steps or custom questions; the script submits only when it finds a single-step Submit. Others are skipped.
-- **LinkedIn blocks or CAPTCHA**: Increase delays and run less frequently.
+- **Applications not submitted**: Many Easy Apply forms have multiple steps or custom questions; the script now handles up to 12 steps but still skips very complex forms.
+- **LinkedIn blocks or CAPTCHA**: Increase delays and run less frequently. Use `--pause-on-challenge`.
+
+## New CLI options
+
+| Flag | Description |
+|------|-------------|
+| `--validate-only` | Check `.env` and `config.json` without opening Chrome |
+| `--pause-on-challenge` | Wait for you to complete CAPTCHA/2FA in the browser |
+| `--fresh-login` | Ignore saved session cookies and log in again |
+| `--confirm` | Ask before submitting real applications |
+| `--debug` | Verbose selector logging |
+
+## Session persistence
+
+After a successful login, cookies are saved to `.linkedin_session/cookies.json` (gitignored). The next run reuses this session so you log in less often. Use `--fresh-login` to force a new login.
+
+## Running tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```

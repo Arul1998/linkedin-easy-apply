@@ -15,6 +15,7 @@
     "delay_between_applications_sec": 30
   },
   "resume_path": "",
+  "photo_path": "",
   "tracking": {
     "output_file": "applications.json",
     "format": "json"

@@ -245,6 +245,7 @@ def main(
                     card,
                     asdict(cfg.saved_answers),
                     cfg.resume_path,
+                    cfg.photo_path,
                 )
                 if status == "applied":
                     record_application(

@@ -951,52 +951,230 @@ def _fill_phone(scope, saved_answers: dict) -> None:
             pass
 
 
-def _fill_contact_info(scope, saved_answers: dict) -> None:
+def _field_hint_for_input(driver, inp) -> str:
+    """Label or nearby text describing what this input is for."""
+    try:
+        return driver.execute_script(
+            "var el=arguments[0];"
+            "if(el.labels&&el.labels.length) return el.labels[0].innerText||'';"
+            "var c=el.closest('div,fieldset,section,li');"
+            "var lab=c&&c.querySelector('label');"
+            "return lab?(lab.innerText||''):'';",
+            inp,
+        ) or ""
+    except Exception:
+        return ""
+
+
+def _input_for_label(driver, scope, label_text: str):
+    """Return the input/textarea that actually belongs to a label.
+
+    Uses the label's `for` attribute (or a wrapped input), falling back to inputs
+    inside the same field container. Avoids the old `following::input[1]` bug where
+    email could land in the next unrelated field (e.g. Location/city).
+    """
+    lt = label_text.strip().lower()
+    if not lt:
+        return None
+    label_xpath = (
+        ".//label[contains(translate(normalize-space(.), "
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), "
+        f"'{lt}')]"
+    )
+    for label in _find_in_modal(scope, By.XPATH, label_xpath):
+        if not label.is_displayed():
+            continue
+        target_id = (label.get_attribute("for") or "").strip()
+        if target_id:
+            # By.ID handles ids with dots/colons that would break a raw #id CSS selector.
+            try:
+                for inp in scope.find_elements(By.ID, target_id):
+                    if inp.is_displayed() and _input_accepts_text(inp):
+                        return inp
+            except Exception:
+                logger.debug("Lookup by label 'for' id %r failed.", target_id, exc_info=True)
+        for inp in label.find_elements(By.XPATH, ".//input | .//textarea"):
+            if inp.is_displayed() and _input_accepts_text(inp):
+                return inp
+        for container_xpath in (
+            "./ancestor::div[contains(@class,'field')][1]",
+            "./ancestor::div[contains(@class,'form-group')][1]",
+            "./ancestor::*[self::div or self::fieldset][1]",
+        ):
+            containers = label.find_elements(By.XPATH, container_xpath)
+            if not containers:
+                continue
+            container = containers[0]
+            for inp in container.find_elements(By.XPATH, ".//input | .//textarea"):
+                if inp.is_displayed() and _input_accepts_text(inp):
+                    return inp
+    return None
+
+
+def _looks_like_email(val: str) -> bool:
+    val = str(val or "").strip()
+    return "@" in val and "." in val.split("@", 1)[-1]
+
+
+def _hint_mentions(hint: str, *needles: str) -> bool:
+    h = hint.lower()
+    return any(n.lower() in h for n in needles)
+
+
+def _fill_contact_info(driver, scope, saved_answers: dict) -> None:
     """Fill first name, last name, and email inside the Easy Apply modal only."""
     field_map = [
-        ("First name", "first_name", ["input[name*='first']", "input[id*='first']"]),
-        ("Last name", "last_name", ["input[name*='last']", "input[id*='last']"]),
-        ("Email", "email", ["input[type='email']", "input[name*='email']", "input[id*='email']"]),
-        ("Email address", "email", ["input[type='email']", "input[name*='email']", "input[id*='email']"]),
+        ("First name", "first_name", ["first"], ["input[name*='first']", "input[id*='first']"]),
+        ("Last name", "last_name", ["last"], ["input[name*='last']", "input[id*='last']"]),
+        ("Email address", "email", ["email"], ["input[type='email']", "input[name*='email']", "input[id*='email']"]),
+        ("Email", "email", ["email"], ["input[type='email']", "input[name*='email']", "input[id*='email']"]),
     ]
     seen_keys: set[str] = set()
-    for label_text, key, css_selectors in field_map:
+    for label_text, key, hint_needles, css_selectors in field_map:
         if key in seen_keys:
             continue
         val = (saved_answers.get(key) or "").strip()
         if not val:
             continue
-        seen_keys.add(key)
         filled = False
-        try:
-            for inp in _find_in_modal(
-                scope,
-                By.XPATH,
-                f".//label[contains(.,'{label_text}')]/following::input[1]",
+        inp = _input_for_label(driver, scope, label_text)
+        if inp is not None:
+            hint = _field_hint_for_input(driver, inp)
+            if _hint_mentions(hint, *hint_needles) and not _hint_mentions(
+                hint, "city", "location", "town", "phone"
             ):
-                if inp.is_displayed():
+                try:
                     inp.clear()
                     inp.send_keys(val)
                     time.sleep(0.2)
                     filled = True
-                    break
-        except Exception:
-            logger.debug("Label-based fill failed for %r", label_text, exc_info=True)
-        if filled:
-            continue
-        for sel in css_selectors:
-            try:
-                for inp in _find_in_modal(scope, By.CSS_SELECTOR, sel):
-                    if inp.is_displayed():
+                except Exception:
+                    logger.debug("Label-based fill failed for %r", label_text, exc_info=True)
+        if not filled:
+            for sel in css_selectors:
+                try:
+                    for inp in _find_in_modal(scope, By.CSS_SELECTOR, sel):
+                        if not inp.is_displayed() or not _input_accepts_text(inp):
+                            continue
+                        hint = _field_hint_for_input(driver, inp)
+                        if _hint_mentions(hint, "city", "location", "town") and not _hint_mentions(
+                            hint, "email"
+                        ):
+                            continue
                         inp.clear()
                         inp.send_keys(val)
                         time.sleep(0.2)
                         filled = True
                         break
-                if filled:
-                    break
-            except Exception:
-                pass
+                    if filled:
+                        break
+                except Exception:
+                    pass
+        if filled:
+            seen_keys.add(key)
+
+
+def _input_accepts_text(inp) -> bool:
+    """True if this input takes typed text (not a select/file/checkbox/radio/button)."""
+    try:
+        tag = (inp.tag_name or "").lower()
+        if tag == "textarea":
+            return True
+        if tag == "select":
+            return False
+        itype = (inp.get_attribute("type") or "text").lower()
+        return itype not in ("file", "checkbox", "radio", "button", "submit", "hidden", "image")
+    except Exception:
+        return True
+
+
+_IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "svg"}
+_DOC_EXTS = {"pdf", "doc", "docx", "rtf", "txt", "odt"}
+
+
+def _file_input_accept(fi) -> str:
+    try:
+        return (fi.get_attribute("accept") or "").lower()
+    except Exception:
+        return ""
+
+
+def _file_input_accepts_document(fi, resume_ext: str) -> bool:
+    """True if a file input's `accept` explicitly allows the resume's type."""
+    accept = _file_input_accept(fi)
+    if not accept:
+        return False
+    if resume_ext and (f".{resume_ext}" in accept or f"/{resume_ext}" in accept):
+        return True
+    if "application/pdf" in accept and resume_ext == "pdf":
+        return True
+    tokens = [t.strip() for t in accept.split(",") if t.strip()]
+    return any(t.lstrip(".") in _DOC_EXTS for t in tokens)
+
+
+def _file_input_is_image_only(fi) -> bool:
+    """True if a file input only accepts images (so a PDF would be rejected)."""
+    accept = _file_input_accept(fi)
+    if not accept:
+        return False
+    tokens = [t.strip().lstrip(".") for t in accept.split(",") if t.strip()]
+    if not tokens:
+        return False
+    for t in tokens:
+        if t == "image/*" or t in _IMAGE_EXTS or t.startswith("image/"):
+            continue
+        return False
+    return True
+
+
+def _file_input_looks_like_photo(fi) -> bool:
+    """Heuristic: nearby label/attrs mention photo/picture/avatar/headshot."""
+    try:
+        blob = " ".join(
+            (fi.get_attribute(a) or "")
+            for a in ("id", "name", "aria-label", "data-test-id")
+        ).lower()
+        driver = fi.parent
+        nearby = driver.execute_script(
+            "var el=arguments[0];"
+            "var c=el.closest('div,fieldset,section');"
+            "return c?(c.innerText||''):'';",
+            fi,
+        ) or ""
+        blob += " " + str(nearby).lower()
+        return any(k in blob for k in ("photo", "picture", "avatar", "headshot", "profile image"))
+    except Exception:
+        return False
+
+
+def _file_input_accepts_image(fi, image_ext: str) -> bool:
+    """True if a file input accepts the given image type."""
+    if _file_input_is_image_only(fi):
+        return True
+    accept = _file_input_accept(fi)
+    if not accept:
+        return _file_input_looks_like_photo(fi)
+    if image_ext and (f".{image_ext}" in accept or f"image/{image_ext}" in accept):
+        return True
+    if "image/*" in accept:
+        return image_ext in _IMAGE_EXTS
+    tokens = [t.strip().lstrip(".") for t in accept.split(",") if t.strip()]
+    return any(t in _IMAGE_EXTS or t.startswith("image/") for t in tokens)
+
+
+def _reveal_and_upload_file(driver, fi, abs_path: str) -> bool:
+    try:
+        driver.execute_script(
+            "arguments[0].style.display='block';"
+            "arguments[0].style.visibility='visible';"
+            "arguments[0].style.opacity='1';",
+            fi,
+        )
+        fi.send_keys(abs_path)
+        time.sleep(2)
+        return True
+    except Exception:
+        return False
 
 
 def _select_label_text(driver, select_el) -> str:
@@ -1071,23 +1249,55 @@ def _fill_required_selects(driver, scope, saved_answers: dict) -> None:
             logger.debug("Required-select fill failed.", exc_info=True)
 
 
-def _fill_text_by_label(scope, label_text: str, value: str) -> None:
+def _fill_text_by_label(driver, scope, label_text: str, value: str) -> None:
     val = str(value or "").strip()
     if not val:
         return
     try:
-        for inp in _find_in_modal(
-            scope,
-            By.XPATH,
-            f".//label[contains(.,'{label_text}')]/following::input[1]",
-        ):
-            if inp.is_displayed():
-                inp.clear()
-                inp.send_keys(val)
-                time.sleep(0.2)
-                return
+        inp = _input_for_label(driver, scope, label_text)
+        if inp is not None and _input_accepts_text(inp):
+            inp.clear()
+            inp.send_keys(val)
+            time.sleep(0.2)
     except Exception:
         logger.debug("Could not fill field for label %r", label_text, exc_info=True)
+
+
+def _fill_city(driver, scope, city_val: str) -> None:
+    """Fill Location/City fields only — never put email or other values here."""
+    city_val = str(city_val or "").strip()
+    if not city_val or _looks_like_email(city_val):
+        return
+    city_inp = None
+    for sel in (
+        "input[id*='city']",
+        "input[name*='city']",
+        "input[placeholder*='City']",
+        "input[aria-label*='city']",
+        "input[aria-label*='City']",
+    ):
+        for inp in _find_in_modal(scope, By.CSS_SELECTOR, sel):
+            if inp.is_displayed() and _input_accepts_text(inp):
+                city_inp = inp
+                break
+        if city_inp is not None:
+            break
+    if city_inp is None:
+        for label in ("Location (city)", "City", "Location", "Town"):
+            cand = _input_for_label(driver, scope, label)
+            if cand is None or not _input_accepts_text(cand):
+                continue
+            hint = _field_hint_for_input(driver, cand)
+            if _hint_mentions(hint, "city", "location", "town") or label.lower() in hint.lower():
+                city_inp = cand
+                break
+    if city_inp is not None:
+        hint = _field_hint_for_input(driver, city_inp)
+        if _hint_mentions(hint, "email") and not _hint_mentions(hint, "city", "location", "town"):
+            logger.debug("Skipping city fill — input looks like an email field (%r).", hint)
+            return
+        city_inp.clear()
+        city_inp.send_keys(city_val)
 
 
 def _fill_yes_no_question(scope, question_hint: str, answer: str) -> None:
@@ -1109,7 +1319,7 @@ def _fill_yes_no_question(scope, question_hint: str, answer: str) -> None:
         logger.debug("Could not answer yes/no question %r", question_hint, exc_info=True)
 
 
-def _fill_easy_apply_step(driver, saved_answers: dict, resume_path: str) -> str:
+def _fill_easy_apply_step(driver, saved_answers: dict, resume_path: str, photo_path: str = "") -> str:
     """One step: fill visible fields then return 'next', 'submitted', or 'skip'."""
     try:
         modal = _get_easy_apply_modal(driver)
@@ -1117,49 +1327,69 @@ def _fill_easy_apply_step(driver, saved_answers: dict, resume_path: str) -> str:
             logger.warning("Easy Apply modal is not open; will only try footer buttons.")
             return _advance_easy_apply_step(driver)
 
-        _fill_contact_info(modal, saved_answers)
+        _fill_contact_info(driver, modal, saved_answers)
         _fill_phone(modal, saved_answers)
         _fill_required_selects(driver, modal, saved_answers)
 
-        # Optional: city, cover letter, etc.
         if saved_answers.get("city"):
             try:
-                for inp in _find_in_modal(
-                    modal,
-                    By.CSS_SELECTOR,
-                    "input[id*='city'], input[name*='city'], input[placeholder*='City']",
-                ):
-                    if inp.is_displayed():
-                        inp.clear()
-                        inp.send_keys(saved_answers["city"])
-                        break
+                _fill_city(driver, modal, saved_answers["city"])
             except Exception:
                 logger.debug("City fill failed.", exc_info=True)
 
-        # Resume upload — scoped to modal only
+        # Photo upload — only to image/photo file inputs (never the resume PDF).
+        if photo_path and Path(photo_path).exists():
+            abs_photo = str(Path(photo_path).resolve())
+            photo_ext = Path(abs_photo).suffix.lower().lstrip(".")
+            uploaded_photo = False
+            try:
+                file_inputs = _find_in_modal(modal, By.CSS_SELECTOR, "input[type='file']")
+                photo_inputs = [
+                    fi for fi in file_inputs
+                    if _file_input_accepts_image(fi, photo_ext)
+                    and not _file_input_accepts_document(fi, "pdf")
+                ]
+                if not photo_inputs:
+                    photo_inputs = [
+                        fi for fi in file_inputs
+                        if _file_input_looks_like_photo(fi) or _file_input_is_image_only(fi)
+                    ]
+                for fi in photo_inputs:
+                    if _reveal_and_upload_file(driver, fi, abs_photo):
+                        uploaded_photo = True
+                        logger.debug("Photo uploaded via file input: %s", abs_photo)
+                        break
+            except Exception:
+                logger.debug("Photo upload failed.", exc_info=True)
+            if not uploaded_photo:
+                logger.debug("No photo file input found on this step. Path: %s", abs_photo)
+
+        # Resume upload — scoped to modal only. Only send the CV to a file input
+        # that actually accepts documents; never to an image/photo field.
         if resume_path and Path(resume_path).exists():
             abs_path = str(Path(resume_path).resolve())
+            resume_ext = Path(abs_path).suffix.lower().lstrip(".")
             uploaded = False
             try:
-                for fi in _find_in_modal(modal, By.CSS_SELECTOR, "input[type='file']"):
-                    try:
-                        driver.execute_script(
-                            "arguments[0].style.display='block';"
-                            "arguments[0].style.visibility='visible';"
-                            "arguments[0].style.opacity='1';",
-                            fi,
-                        )
-                        fi.send_keys(abs_path)
-                        time.sleep(2)
+                file_inputs = _find_in_modal(modal, By.CSS_SELECTOR, "input[type='file']")
+                doc_inputs = [fi for fi in file_inputs if _file_input_accepts_document(fi, resume_ext)]
+                if not doc_inputs:
+                    doc_inputs = [
+                        fi for fi in file_inputs
+                        if not _file_input_is_image_only(fi) and not _file_input_looks_like_photo(fi)
+                    ]
+                for fi in doc_inputs:
+                    if _reveal_and_upload_file(driver, fi, abs_path):
                         uploaded = True
                         logger.debug("Resume uploaded via file input: %s", abs_path)
                         break
-                    except Exception:
-                        pass
             except Exception:
                 logger.debug("Resume upload failed.", exc_info=True)
             if not uploaded:
-                logger.warning("Could not find a file input to upload resume. Path: %s", abs_path)
+                logger.warning(
+                    "No document file input found for resume (skipped image/photo inputs). Path: %s",
+                    abs_path,
+                )
 
         # Cover letter textarea
         if saved_answers.get("cover_letter"):
@@ -1175,9 +1405,9 @@ def _fill_easy_apply_step(driver, saved_answers: dict, resume_path: str) -> str:
                 logger.debug("Cover letter fill failed.", exc_info=True)
 
         if saved_answers.get("salary"):
-            _fill_text_by_label(modal, "salary", saved_answers["salary"])
-            _fill_text_by_label(modal, "compensation", saved_answers["salary"])
-            _fill_text_by_label(modal, "desired salary", saved_answers["salary"])
+            _fill_text_by_label(driver, modal, "salary", saved_answers["salary"])
+            _fill_text_by_label(driver, modal, "compensation", saved_answers["salary"])
+            _fill_text_by_label(driver, modal, "desired salary", saved_answers["salary"])
 
         if saved_answers.get("sponsorship"):
             _fill_yes_no_question(modal, "sponsorship", saved_answers["sponsorship"])
@@ -1231,7 +1461,7 @@ def _fill_easy_apply_step(driver, saved_answers: dict, resume_path: str) -> str:
         return "error"
 
 
-def fill_easy_apply_modal(driver, saved_answers: dict, resume_path: str) -> str:
+def fill_easy_apply_modal(driver, saved_answers: dict, resume_path: str, photo_path: str = "") -> str:
     """
     Fill the Easy Apply modal with saved answers and optional resume.
     Clicks Next to get past 'Your profile matches' and similar screens, then fills and submits.
@@ -1248,7 +1478,7 @@ def fill_easy_apply_modal(driver, saved_answers: dict, resume_path: str) -> str:
     time.sleep(1.5)
     max_steps = EASY_APPLY_MAX_STEPS
     for step in range(max_steps):
-        result = _fill_easy_apply_step(driver, saved_answers, resume_path)
+        result = _fill_easy_apply_step(driver, saved_answers, resume_path, photo_path)
         logger.debug("Easy Apply step %d/%d -> %s", step + 1, max_steps, result)
         if result == "submitted" or _application_submitted(driver):
             return "submitted"
@@ -1307,6 +1537,7 @@ def apply_to_job(
     card,
     saved_answers: dict,
     resume_path: str,
+    photo_path: str = "",
 ) -> tuple[str, str, str, str]:
     """
     Select job card, open Easy Apply in detail panel, fill and submit if simple.
@@ -1324,7 +1555,7 @@ def apply_to_job(
         return job_title, company_name, job_url, "skipped (Apply button not found)"
 
     time.sleep(2)
-    result = fill_easy_apply_modal(driver, saved_answers, resume_path or "")
+    result = fill_easy_apply_modal(driver, saved_answers, resume_path or "", photo_path or "")
 
     if result == "submitted" or _application_submitted(driver):
         close_modal(driver)

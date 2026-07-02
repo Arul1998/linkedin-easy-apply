@@ -49,6 +49,7 @@ class AppConfig:
     delay_between_actions_sec: float
     delay_between_applications_sec: float
     resume_path: str
+    photo_path: str
     tracking_file: str
     tracking_format: str
     max_applications: int
@@ -125,6 +126,7 @@ def get_config() -> AppConfig:
             os.environ.get("DELAY_APPLICATIONS_SEC", rate.get("delay_between_applications_sec", DEFAULT_DELAY_APPLICATIONS))
         ),
         resume_path=os.environ.get("RESUME_PATH", file_cfg.get("resume_path", "")),
+        photo_path=os.environ.get("PHOTO_PATH", file_cfg.get("photo_path", "")),
         tracking_file=os.environ.get("TRACKING_FILE", tracking.get("output_file", DEFAULT_TRACKING_FILE)),
         tracking_format=os.environ.get("TRACKING_FORMAT", tracking.get("format", DEFAULT_TRACKING_FORMAT)).lower(),
         max_applications=_int_env("MAX_APPLICATIONS", file_cfg.get("max_applications", 0)),
@@ -173,6 +175,23 @@ def validate_config(cfg: AppConfig) -> list[ValidationIssue]:
                 ValidationIssue(
                     "warning",
                     f"Resume file type {resume.suffix!r} may not be accepted by LinkedIn (prefer PDF).",
+                )
+            )
+
+    if cfg.photo_path:
+        photo = Path(cfg.photo_path).expanduser()
+        if not photo.exists():
+            issues.append(
+                ValidationIssue(
+                    "warning",
+                    f"Photo file not found: {photo}. Photo fields on application forms will be skipped.",
+                )
+            )
+        elif photo.suffix.lower() not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+            issues.append(
+                ValidationIssue(
+                    "warning",
+                    f"Photo file type {photo.suffix!r} may not be accepted (prefer JPG or PNG).",
                 )
             )
 

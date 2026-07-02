@@ -130,3 +130,91 @@ def get_config() -> AppConfig:
         max_applications=_int_env("MAX_APPLICATIONS", file_cfg.get("max_applications", 0)),
         saved_answers=saved,
     )
+
+
+@dataclass(slots=True)
+class ValidationIssue:
+    level: str  # "error" | "warning"
+    message: str
+
+
+def validate_config(cfg: AppConfig) -> list[ValidationIssue]:
+    """Return setup problems and warnings before starting a run."""
+    issues: list[ValidationIssue] = []
+
+    if not cfg.email or not cfg.password:
+        issues.append(ValidationIssue("error", "Set LINKEDIN_EMAIL and LINKEDIN_PASSWORD in .env"))
+    elif "@" not in cfg.email:
+        issues.append(ValidationIssue("error", "LINKEDIN_EMAIL does not look like a valid email address"))
+
+    if not cfg.keywords.strip():
+        issues.append(ValidationIssue("warning", "Search keywords are empty — results may be very broad"))
+    if not cfg.location.strip() and not cfg.geo_id.strip():
+        issues.append(ValidationIssue("warning", "No location or geo_id set — search may be worldwide"))
+
+    if cfg.resume_path:
+        resume = Path(cfg.resume_path).expanduser()
+        if not resume.exists():
+            issues.append(
+                ValidationIssue(
+                    "warning",
+                    f"Resume file not found: {resume}. Applications may fail when a resume is required.",
+                )
+            )
+        elif resume.suffix.lower() not in {".pdf", ".doc", ".docx"}:
+            issues.append(
+                ValidationIssue(
+                    "warning",
+                    f"Resume file type {resume.suffix!r} may not be accepted by LinkedIn (prefer PDF).",
+                )
+            )
+
+    answers = cfg.saved_answers
+    missing_contact = [
+        name
+        for name, value in (
+            ("first_name", answers.first_name),
+            ("last_name", answers.last_name),
+            ("email", answers.email),
+            ("phone", answers.phone),
+        )
+        if not str(value).strip()
+    ]
+    if missing_contact:
+        issues.append(
+            ValidationIssue(
+                "warning",
+                "saved_answers is missing: "
+                + ", ".join(missing_contact)
+                + ". Some application forms may not auto-fill.",
+            )
+        )
+
+    if cfg.delay_between_applications_sec < 15:
+        issues.append(
+            ValidationIssue(
+                "warning",
+                "delay_between_applications_sec is below 15s — consider 30–60s to reduce detection risk.",
+            )
+        )
+
+    if cfg.tracking_format not in ("json", "csv"):
+        issues.append(ValidationIssue("warning", f"Unknown tracking format {cfg.tracking_format!r}; using JSON."))
+
+    return issues
+
+
+def print_validation(issues: list[ValidationIssue]) -> None:
+    """Print validation results in plain English."""
+    errors = [i for i in issues if i.level == "error"]
+    warnings = [i for i in issues if i.level == "warning"]
+    if errors:
+        print("\nSetup errors (fix before running):")
+        for item in errors:
+            print(f"  [ERROR] {item.message}")
+    if warnings:
+        print("\nSetup warnings:")
+        for item in warnings:
+            print(f"  [WARN]  {item.message}")
+    if not issues:
+        print("\nSetup check passed.")

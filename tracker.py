@@ -36,6 +36,7 @@ def record_application(
     company_name: str,
     job_url: str,
     existing: list[dict[str, Any]] | None = None,
+    status: str = "applied",
 ) -> None:
     """Append one application to the tracking file."""
     path = Path(file_path)
@@ -46,12 +47,14 @@ def record_application(
         "company_name": company_name,
         "job_url": job_url,
         "date_applied": date_applied,
+        "status": status,
     }
 
     if fmt == "csv":
         has_content = path.exists() and path.stat().st_size > 0
+        fieldnames = ["job_title", "company_name", "job_url", "date_applied", "status"]
         with open(path, "a", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["job_title", "company_name", "job_url", "date_applied"])
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             if not has_content:
                 writer.writeheader()
             writer.writerow(row)

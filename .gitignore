@@ -2,6 +2,7 @@
 .env
 .env.local
 *.env
+config.json
 
 # Python
 __pycache__/
@@ -28,3 +29,4 @@ applications.json
 # Selenium / browser
 geckodriver.log
 chromedriver.log
+.linkedin_session/

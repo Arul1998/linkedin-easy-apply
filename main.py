@@ -13,10 +13,11 @@ from typing import Optional
 
 from dataclasses import asdict
 
-from config import AppConfig, get_config
+from config import AppConfig, get_config, print_validation, validate_config
+from errors import humanize_skip_reason
 from linkedin_automation import (
     get_driver,
-    login,
+    ensure_logged_in,
     navigate_to_search,
     ensure_easy_apply_url,
     get_job_cards,
@@ -61,13 +62,38 @@ def _scroll_job_list(driver) -> None:
         logger.debug("Failed to scroll job list.", exc_info=True)
 
 
-def main(dry_run: bool = False, cfg: Optional[AppConfig] = None, debug: bool = False) -> None:
+def _print_run_summary(applied_count: int, skipped_count: int, skip_reasons: Counter[str], tracking_file: str) -> None:
+    print("\n" + "=" * 60)
+    print("RUN SUMMARY")
+    print("=" * 60)
+    print(f"  Applied:  {applied_count}")
+    print(f"  Skipped:  {skipped_count}")
+    print(f"  Tracking: {tracking_file}")
+    if skip_reasons:
+        print("\nWhy jobs were skipped:")
+        for reason, count in skip_reasons.most_common():
+            print(f"  - {count}x {humanize_skip_reason(reason)}")
+    print("=" * 60 + "\n")
+
+
+def main(
+    dry_run: bool = False,
+    cfg: Optional[AppConfig] = None,
+    debug: bool = False,
+    pause_on_challenge: bool = False,
+    fresh_login: bool = False,
+) -> None:
     _configure_logging(debug=debug)
     if cfg is None:
         cfg = get_config()
 
     if not cfg.email or not cfg.password:
         logger.error("Set LINKEDIN_EMAIL and LINKEDIN_PASSWORD in .env or environment.")
+        sys.exit(1)
+
+    issues = validate_config(cfg)
+    print_validation(issues)
+    if any(i.level == "error" for i in issues):
         sys.exit(1)
 
     tracking_file = cfg.tracking_file
@@ -95,9 +121,20 @@ def main(dry_run: bool = False, cfg: Optional[AppConfig] = None, debug: bool = F
 
     driver = get_driver(headless=False)
     try:
-        if not login(driver, cfg.email, cfg.password):
-            logger.error("Login failed. Check credentials and try again.")
+        login_result = ensure_logged_in(
+            driver,
+            cfg.email,
+            cfg.password,
+            use_session=not fresh_login,
+            fresh_login=fresh_login,
+            pause_on_challenge=pause_on_challenge,
+        )
+        if not login_result.success:
+            logger.error("Login failed: %s", login_result.message)
+            if login_result.reason == "challenge_required" and not pause_on_challenge:
+                logger.error("Re-run with --pause-on-challenge to complete verification manually.")
             sys.exit(1)
+        logger.info("%s", login_result.message)
         rate_limit_actions(cfg)
 
         if not navigate_to_search(
@@ -136,11 +173,20 @@ def main(dry_run: bool = False, cfg: Optional[AppConfig] = None, debug: bool = F
         last_processed_url: Optional[str] = None
         scroll_attempts = 0
         MAX_SCROLL_ATTEMPTS = 10
+        target_label = str(max_applications) if max_applications > 0 else "no limit"
 
         while True:
             if max_applications > 0 and applied_count >= max_applications:
                 logger.info("Reached limit of %d applications.", max_applications)
                 break
+
+            if max_applications > 0:
+                logger.info(
+                    "Progress: %d/%d applied, %d skipped so far",
+                    applied_count,
+                    max_applications,
+                    skipped_count,
+                )
 
             ensure_easy_apply_url(driver)
             cards = get_job_cards(driver)
@@ -204,16 +250,17 @@ def main(dry_run: bool = False, cfg: Optional[AppConfig] = None, debug: bool = F
                         company,
                         url,
                         existing=existing if tracking_fmt == "json" else None,
+                        status="applied",
                     )
                     applied_urls.add(url)
                     applied_count += 1
-                    logger.info("Applied: %s @ %s", title, company)
+                    logger.info("Applied (%s/%s): %s @ %s", applied_count, target_label, title, company)
                     rate_limit_after_application(cfg)
                 else:
                     skipped_count += 1
                     key = status or "skipped"
                     skip_reasons[key] += 1
-                    logger.info("Skipped: %s @ %s (%s)", title, company, status)
+                    logger.info("Skipped: %s @ %s — %s", title, company, humanize_skip_reason(key))
             except Exception:
                 skipped_count += 1
                 skip_reasons["exception"] += 1
@@ -232,7 +279,8 @@ def main(dry_run: bool = False, cfg: Optional[AppConfig] = None, debug: bool = F
         if skip_reasons:
             logger.info("Skip reasons breakdown:")
             for reason, count in skip_reasons.most_common():
-                logger.info("  %s: %d", reason, count)
+                logger.info("  %s: %d — %s", reason, count, humanize_skip_reason(reason))
+        _print_run_summary(applied_count, skipped_count, skip_reasons, tracking_file)
     finally:
         driver.quit()
 
@@ -270,6 +318,21 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Enable DEBUG logging to see which selectors are tried when finding the Apply button.",
     )
+    parser.add_argument(
+        "--pause-on-challenge",
+        action="store_true",
+        help="Pause and wait for you to complete CAPTCHA/2FA in the browser when LinkedIn asks.",
+    )
+    parser.add_argument(
+        "--fresh-login",
+        action="store_true",
+        help="Ignore saved session cookies and log in with email/password.",
+    )
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="Check .env and config.json setup without opening the browser.",
+    )
     return parser.parse_args(argv)
 
 
@@ -287,6 +350,11 @@ if __name__ == "__main__":
         cfg.location = args.location
     if args.max_applications is not None:
         cfg.max_applications = max(args.max_applications, 0)
+
+    issues = validate_config(cfg)
+    if args.validate_only:
+        print_validation(issues)
+        sys.exit(1 if any(i.level == "error" for i in issues) else 0)
 
     logging.getLogger("linkedin_easy_apply").info(
         "Using configuration for this run: dry_run=%s, keywords=%r, location=%r, "
@@ -310,4 +378,10 @@ if __name__ == "__main__":
             print("Aborted by user.")
             sys.exit(0)
 
-    main(dry_run=dry_run_flag, cfg=cfg, debug=bool(args.debug))
+    main(
+        dry_run=dry_run_flag,
+        cfg=cfg,
+        debug=bool(args.debug),
+        pause_on_challenge=bool(args.pause_on_challenge),
+        fresh_login=bool(args.fresh_login),
+    )

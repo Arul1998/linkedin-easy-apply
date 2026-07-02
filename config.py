@@ -152,6 +152,13 @@ def validate_config(cfg: AppConfig) -> list[ValidationIssue]:
     if not cfg.location.strip() and not cfg.geo_id.strip():
         issues.append(ValidationIssue("warning", "No location or geo_id set — search may be worldwide"))
 
+    if not cfg.resume_path:
+        issues.append(
+            ValidationIssue(
+                "warning",
+                "No resume_path set — most Easy Apply jobs require a resume upload and will be skipped.",
+            )
+        )
     if cfg.resume_path:
         resume = Path(cfg.resume_path).expanduser()
         if not resume.exists():

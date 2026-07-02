@@ -13,7 +13,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import Select, WebDriverWait
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
@@ -485,7 +485,7 @@ def get_job_title_and_company(card) -> tuple[str, str]:
             title_el = card.find_elements(By.XPATH, ".//a[contains(@href,'/jobs/')]")
         title = title_el[0].text.strip() if title_el else ""
         # Company often in same card
-        company_el = card.find_elements(By.CSS_SELECTOR, "span.job-card-container__primary-description, h4.job-card-container__company-name")
+        company_el = card.find_elements(By.CSS_SELECTOR, "span.job-card-container__primary-description, h4.job-card-container__company-name, .artdeco-entity-lockup__subtitle span, .artdeco-entity-lockup__subtitle")
         if not company_el:
             company_el = card.find_elements(By.XPATH, ".//h4 | .//span[contains(@class,'company')]")
         company = company_el[0].text.strip() if company_el else "Unknown"
@@ -559,12 +559,16 @@ def open_job_by_url(driver, job_url: str) -> bool:
 
 
 def _get_detail_panel(driver):
-    """Get the right-hand job details panel so we don't click Apply in the left list."""
+    """Get the right-hand job details panel so we don't click Apply in the left list.
+
+    Note: div[data-job-id] must NOT be used here — LinkedIn now puts that
+    attribute on the left-list job cards, which contain no apply button.
+    """
     try:
         for sel in [
-            "div[data-job-id]",
             ".jobs-search__job-details",
             ".scaffold-layout__detail",
+            ".jobs-details",
             "div.jobs-search-right-panel",
             "main .scaffold-layout__main",
         ]:
@@ -767,23 +771,47 @@ def _advance_easy_apply_step(driver) -> str:
     return "skip"
 
 
+def _is_filter_control(btn) -> bool:
+    """True for search-filter UI (e.g. the 'Easy Apply filter.' pill), which must
+    never be clicked as an apply button — it toggles the search filter off."""
+    try:
+        btn_id = btn.get_attribute("id") or ""
+        label = (btn.get_attribute("aria-label") or "").lower()
+        return btn_id.startswith("searchFilter") or "filter" in label
+    except Exception:
+        return False
+
+
+def _wait_for_easy_apply_modal(driver, timeout: int = 8) -> bool:
+    """Wait until the Easy Apply modal is visible after clicking the apply button."""
+    try:
+        WebDriverWait(driver, timeout).until(lambda d: _get_easy_apply_modal(d) is not None)
+        return True
+    except Exception:
+        return False
+
+
 def click_easy_apply_in_detail_panel(driver) -> bool:
-    """Click Easy Apply / In Apply button in the job detail (right) panel. Returns True if found and clicked."""
+    """Click Easy Apply / In Apply in the job detail (right) panel.
+    Returns True only if the Easy Apply modal actually opened."""
     try:
         scope = _get_detail_panel(driver)
         search_in = scope if scope else driver
         logger.debug("Detail panel found: %s", scope is not None)
 
-        # 1) Most reliable: aria-label contains "Easy Apply" (LinkedIn sets this on the apply button)
+        # 1) Most reliable: LinkedIn's dedicated apply button id/class, then aria-label
         for sel in [
-            "button[aria-label*='Easy Apply']",
-            "button[aria-label*='In Apply']",
+            "button#jobs-apply-button-id",
             "button.jobs-apply-button",
             "button[class*='jobs-apply-button']",
+            "button[aria-label*='Easy Apply']",
+            "button[aria-label*='In Apply']",
         ]:
             btns = search_in.find_elements(By.CSS_SELECTOR, sel)
             logger.debug("Selector %r found %d buttons", sel, len(btns))
             for b in btns:
+                if _is_filter_control(b):
+                    continue
                 try:
                     visible = driver.execute_script(
                         "var r=arguments[0].getBoundingClientRect();"
@@ -793,7 +821,10 @@ def click_easy_apply_in_detail_panel(driver) -> bool:
                     visible = b.is_displayed()
                 if visible and _click_apply_button(driver, b):
                     logger.debug("Clicked apply button via selector %r", sel)
-                    return True
+                    if _wait_for_easy_apply_modal(driver):
+                        return True
+                    logger.warning("Apply button clicked but Easy Apply modal did not open.")
+                    return False
 
         # 2) By span text inside button — most stable across LinkedIn DOM changes
         for xpath in [
@@ -805,17 +836,30 @@ def click_easy_apply_in_detail_panel(driver) -> bool:
             btns = search_in.find_elements(By.XPATH, xpath)
             logger.debug("XPath %r found %d buttons", xpath, len(btns))
             for b in btns:
+                if _is_filter_control(b):
+                    continue
                 if _click_apply_button(driver, b):
                     logger.debug("Clicked apply button via xpath %r", xpath)
-                    return True
+                    if _wait_for_easy_apply_modal(driver):
+                        return True
+                    logger.warning("Apply button clicked but Easy Apply modal did not open.")
+                    return False
 
-        # 3) Full page fallback using JS to find and click any Easy Apply button
+        # 3) JS fallback — scoped to the detail pane and skipping search-filter
+        #    controls, so it can never hit the "Easy Apply filter" pill.
         clicked = driver.execute_script("""
-            var btns = Array.from(document.querySelectorAll('button'));
+            var scope = document.querySelector('.jobs-search__job-details')
+                || document.querySelector('.scaffold-layout__detail')
+                || document.querySelector('.jobs-details')
+                || document;
+            var btns = Array.from(scope.querySelectorAll('button'));
             for (var b of btns) {
+                var id = b.id || '';
                 var label = (b.getAttribute('aria-label') || '').toLowerCase();
                 var text = (b.textContent || '').trim().toLowerCase();
-                if (label.includes('easy apply') || label.includes('in apply') ||
+                if (id.indexOf('searchFilter') === 0 || label.indexOf('filter') !== -1) continue;
+                if (b.closest('.search-reusables__filter-list, .search-filters-bar')) continue;
+                if (label.indexOf('easy apply') === 0 || label.indexOf('in apply') !== -1 ||
                     text === 'easy apply' || text === 'in apply') {
                     var r = b.getBoundingClientRect();
                     if (r.width > 0 && r.height > 0) {
@@ -829,8 +873,10 @@ def click_easy_apply_in_detail_panel(driver) -> bool:
         """)
         if clicked:
             logger.debug("Clicked apply button via JS fallback")
-            time.sleep(1)
-            return True
+            if _wait_for_easy_apply_modal(driver):
+                return True
+            logger.warning("Apply button clicked (JS fallback) but Easy Apply modal did not open.")
+            return False
 
         logger.warning("Easy Apply button not found on this job. Page URL: %s", driver.current_url)
         return False
@@ -953,6 +999,78 @@ def _fill_contact_info(scope, saved_answers: dict) -> None:
                 pass
 
 
+def _select_label_text(driver, select_el) -> str:
+    """Get the question/label text associated with a <select> in the modal."""
+    try:
+        return driver.execute_script(
+            "var s=arguments[0];"
+            "if(s.labels&&s.labels.length) return s.labels[0].innerText||'';"
+            "var c=s.closest('div'); return c?(c.innerText||'').split('\\n')[0]:'';",
+            select_el,
+        ) or ""
+    except Exception:
+        return ""
+
+
+def _choose_select_option(select_el, prefer_texts: list[str], allow_first: bool) -> bool:
+    """Pick an option in a native <select> if it still shows the placeholder.
+    Prefers options containing any of prefer_texts; if allow_first, falls back
+    to the first real option. Returns True if a real value ends up selected."""
+    try:
+        sel = Select(select_el)
+        options = sel.options
+        if not options:
+            return False
+        current = (sel.first_selected_option.text or "").strip().lower()
+        if current and "select an option" not in current:
+            return True
+        for want in prefer_texts:
+            w = str(want or "").strip().lower()
+            if not w:
+                continue
+            for i, o in enumerate(options):
+                text = (o.text or "").strip()
+                if text and w in text.lower():
+                    sel.select_by_index(i)
+                    time.sleep(0.3)
+                    return True
+        if allow_first:
+            for i, o in enumerate(options):
+                text = (o.text or "").strip().lower()
+                if text and "select an option" not in text:
+                    sel.select_by_index(i)
+                    time.sleep(0.3)
+                    return True
+    except Exception:
+        logger.debug("Could not choose select option.", exc_info=True)
+    return False
+
+
+def _fill_required_selects(driver, scope, saved_answers: dict) -> None:
+    """Handle required dropdowns LinkedIn leaves on 'Select an option'.
+
+    Email and phone-country-code selects only list the user's own verified
+    values, so picking is safe. Sponsorship/visa selects use the saved answer.
+    Anything else is left alone — better to skip the job than guess an answer.
+    """
+    email = str(saved_answers.get("email") or "").strip()
+    country_code = str(saved_answers.get("phone_country_code") or "").strip()
+    sponsorship = str(saved_answers.get("sponsorship") or "").strip()
+    for select_el in _find_in_modal(scope, By.TAG_NAME, "select"):
+        try:
+            if not select_el.is_displayed():
+                continue
+            label = _select_label_text(driver, select_el).lower()
+            if "email" in label:
+                _choose_select_option(select_el, [email], allow_first=True)
+            elif "country code" in label or "phone country" in label:
+                _choose_select_option(select_el, [country_code], allow_first=True)
+            elif sponsorship and any(k in label for k in ("sponsor", "visa", "work authorization")):
+                _choose_select_option(select_el, [sponsorship], allow_first=False)
+        except Exception:
+            logger.debug("Required-select fill failed.", exc_info=True)
+
+
 def _fill_text_by_label(scope, label_text: str, value: str) -> None:
     val = str(value or "").strip()
     if not val:
@@ -1001,6 +1119,7 @@ def _fill_easy_apply_step(driver, saved_answers: dict, resume_path: str) -> str:
 
         _fill_contact_info(modal, saved_answers)
         _fill_phone(modal, saved_answers)
+        _fill_required_selects(driver, modal, saved_answers)
 
         # Optional: city, cover letter, etc.
         if saved_answers.get("city"):
@@ -1142,14 +1261,31 @@ def fill_easy_apply_modal(driver, saved_answers: dict, resume_path: str) -> str:
 
 
 def close_modal(driver) -> None:
-    """Close Easy Apply or any overlay modal (Discard / Cancel / X)."""
+    """Close the Easy Apply modal (X / ESC), then confirm LinkedIn's
+    'Save this application?' prompt by clicking Discard so no overlay is left
+    blocking the next job."""
     try:
-        discard = driver.find_elements(By.XPATH, "//button[contains(., 'Discard') or contains(., 'Cancel') or contains(., 'Close')]")
-        if discard and discard[0].is_displayed():
-            discard[0].click()
-        else:
-            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-        time.sleep(2)
+        dismissed = False
+        modal = _get_easy_apply_modal(driver)
+        if modal is not None:
+            for b in modal.find_elements(By.CSS_SELECTOR, "button[aria-label*='Dismiss']"):
+                if b.is_displayed():
+                    b.click()
+                    dismissed = True
+                    break
+        if not dismissed:
+            discard = driver.find_elements(By.XPATH, "//button[contains(., 'Discard') or contains(., 'Cancel') or contains(., 'Close')]")
+            if discard and discard[0].is_displayed():
+                discard[0].click()
+            else:
+                driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+        time.sleep(1.5)
+        # Confirm the discard prompt if LinkedIn asks to save the application.
+        for b in driver.find_elements(By.XPATH, "//button[contains(., 'Discard')]"):
+            if b.is_displayed():
+                b.click()
+                break
+        time.sleep(1.5)
         _scroll_list_into_view(driver)
     except Exception:
         pass

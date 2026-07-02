@@ -54,6 +54,9 @@ class AppConfig:
     tracking_format: str
     max_applications: int
     saved_answers: SavedAnswers = field(default_factory=SavedAnswers)
+    # Question-substring -> answer overrides for Easy Apply form questions
+    # (checked before resume-derived answers).
+    custom_answers: Dict[str, str] = field(default_factory=dict)
 
 
 def _load_json_config(path: Path) -> Dict[str, Any]:
@@ -131,6 +134,9 @@ def get_config() -> AppConfig:
         tracking_format=os.environ.get("TRACKING_FORMAT", tracking.get("format", DEFAULT_TRACKING_FORMAT)).lower(),
         max_applications=_int_env("MAX_APPLICATIONS", file_cfg.get("max_applications", 0)),
         saved_answers=saved,
+        custom_answers={
+            str(k): str(v) for k, v in (file_cfg.get("custom_answers") or {}).items()
+        },
     )
 
 

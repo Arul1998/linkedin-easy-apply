@@ -246,6 +246,7 @@ def main(
                     asdict(cfg.saved_answers),
                     cfg.resume_path,
                     cfg.photo_path,
+                    cfg.custom_answers,
                 )
                 if status == "applied":
                     record_application(

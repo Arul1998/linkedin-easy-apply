@@ -19,6 +19,7 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
 from errors import LoginResult
+from resume_profile import answer_question, get_profile, numeric_part
 from session_store import load_cookies, save_cookies
 
 
@@ -1319,7 +1320,126 @@ def _fill_yes_no_question(scope, question_hint: str, answer: str) -> None:
         logger.debug("Could not answer yes/no question %r", question_hint, exc_info=True)
 
 
-def _fill_easy_apply_step(driver, saved_answers: dict, resume_path: str, photo_path: str = "") -> str:
+# Question hints already covered by the dedicated contact/phone/city fillers.
+_HANDLED_FIELD_HINTS = (
+    "first name", "last name", "email", "phone", "mobile", "country code", "cover letter",
+)
+
+
+def _radio_question_text(fieldset) -> str:
+    """Question text for a radio group: legend if present, else first text line."""
+    try:
+        legends = fieldset.find_elements(By.TAG_NAME, "legend")
+        if legends:
+            text = (legends[0].text or "").strip()
+            if text:
+                return text
+        return (fieldset.text or "").strip().split("\n")[0]
+    except Exception:
+        return ""
+
+
+def _click_radio_answer(fieldset, answer: str) -> bool:
+    """Select the radio option whose label matches the answer (exact, then contains)."""
+    ans = str(answer or "").strip()
+    if not ans:
+        return False
+    try:
+        labels = [l for l in fieldset.find_elements(By.TAG_NAME, "label") if l.is_displayed()]
+        for label in labels:
+            if (label.text or "").strip().lower() == ans.lower():
+                label.click()
+                time.sleep(0.2)
+                return True
+        for label in labels:
+            if ans.lower() in (label.text or "").strip().lower():
+                label.click()
+                time.sleep(0.2)
+                return True
+    except Exception:
+        logger.debug("Could not click radio answer %r.", ans, exc_info=True)
+    return False
+
+
+def _answer_form_questions(driver, modal, profile, saved_answers: dict, custom_answers: dict) -> None:
+    """Answer remaining form questions (text, number, select, radio) from the resume
+    profile and custom_answers. Unanswerable questions are logged, not guessed."""
+    # Text / number inputs and textareas that are still empty.
+    for inp in _find_in_modal(modal, By.CSS_SELECTOR, "input[type='text'], input[type='number'], textarea"):
+        try:
+            if not inp.is_displayed() or not _input_accepts_text(inp):
+                continue
+            if (inp.get_attribute("value") or "").strip():
+                continue
+            question = _field_hint_for_input(driver, inp)
+            if not question.strip() or _hint_mentions(question, *_HANDLED_FIELD_HINTS):
+                continue
+            answer = answer_question(question, profile, saved_answers, custom_answers)
+            if not answer:
+                logger.info("Unanswered form question (add to custom_answers): %r", question.strip()[:140])
+                continue
+            is_numeric = (inp.get_attribute("type") or "").lower() == "number" or "numeric" in (
+                (inp.get_attribute("id") or "") + (inp.get_attribute("name") or "")
+            ).lower()
+            if is_numeric:
+                answer = numeric_part(answer)
+                if answer is None:
+                    continue
+            inp.clear()
+            inp.send_keys(answer)
+            time.sleep(0.2)
+            logger.debug("Answered %r -> %r", question.strip()[:100], answer)
+        except Exception:
+            logger.debug("Failed answering a text question.", exc_info=True)
+
+    # Dropdowns still showing the placeholder.
+    for select_el in _find_in_modal(modal, By.TAG_NAME, "select"):
+        try:
+            if not select_el.is_displayed():
+                continue
+            question = _select_label_text(driver, select_el)
+            if not question.strip() or _hint_mentions(question, *_HANDLED_FIELD_HINTS):
+                continue
+            answer = answer_question(question, profile, saved_answers, custom_answers)
+            if not answer:
+                sel = Select(select_el)
+                current = (sel.first_selected_option.text or "").strip().lower() if sel.options else ""
+                if "select an option" in current or not current:
+                    logger.info("Unanswered dropdown question (add to custom_answers): %r", question.strip()[:140])
+                continue
+            if _choose_select_option(select_el, [answer], allow_first=False):
+                logger.debug("Answered dropdown %r -> %r", question.strip()[:100], answer)
+        except Exception:
+            logger.debug("Failed answering a dropdown question.", exc_info=True)
+
+    # Radio groups with nothing selected yet.
+    for fieldset in _find_in_modal(modal, By.TAG_NAME, "fieldset"):
+        try:
+            if not fieldset.is_displayed():
+                continue
+            radios = fieldset.find_elements(By.CSS_SELECTOR, "input[type='radio']")
+            if not radios or any(r.is_selected() for r in radios):
+                continue
+            question = _radio_question_text(fieldset)
+            if not question.strip():
+                continue
+            answer = answer_question(question, profile, saved_answers, custom_answers)
+            if not answer:
+                logger.info("Unanswered radio question (add to custom_answers): %r", question.strip()[:140])
+                continue
+            if _click_radio_answer(fieldset, answer):
+                logger.debug("Answered radio %r -> %r", question.strip()[:100], answer)
+        except Exception:
+            logger.debug("Failed answering a radio question.", exc_info=True)
+
+
+def _fill_easy_apply_step(
+    driver,
+    saved_answers: dict,
+    resume_path: str,
+    photo_path: str = "",
+    custom_answers: dict | None = None,
+) -> str:
     """One step: fill visible fields then return 'next', 'submitted', or 'skip'."""
     try:
         modal = _get_easy_apply_modal(driver)
@@ -1454,6 +1574,13 @@ def _fill_easy_apply_step(driver, saved_answers: dict, resume_path: str, photo_p
             except Exception:
                 logger.debug("Start date fill failed.", exc_info=True)
 
+        # Answer any remaining questions from the resume profile + custom_answers.
+        try:
+            profile = get_profile(resume_path)
+            _answer_form_questions(driver, modal, profile, saved_answers, custom_answers or {})
+        except Exception:
+            logger.debug("Resume-based question answering failed.", exc_info=True)
+
         # Advance the Easy Apply wizard (Submit / Review / Next)
         return _advance_easy_apply_step(driver)
     except Exception:
@@ -1461,7 +1588,13 @@ def _fill_easy_apply_step(driver, saved_answers: dict, resume_path: str, photo_p
         return "error"
 
 
-def fill_easy_apply_modal(driver, saved_answers: dict, resume_path: str, photo_path: str = "") -> str:
+def fill_easy_apply_modal(
+    driver,
+    saved_answers: dict,
+    resume_path: str,
+    photo_path: str = "",
+    custom_answers: dict | None = None,
+) -> str:
     """
     Fill the Easy Apply modal with saved answers and optional resume.
     Clicks Next to get past 'Your profile matches' and similar screens, then fills and submits.
@@ -1478,7 +1611,7 @@ def fill_easy_apply_modal(driver, saved_answers: dict, resume_path: str, photo_p
     time.sleep(1.5)
     max_steps = EASY_APPLY_MAX_STEPS
     for step in range(max_steps):
-        result = _fill_easy_apply_step(driver, saved_answers, resume_path, photo_path)
+        result = _fill_easy_apply_step(driver, saved_answers, resume_path, photo_path, custom_answers)
         logger.debug("Easy Apply step %d/%d -> %s", step + 1, max_steps, result)
         if result == "submitted" or _application_submitted(driver):
             return "submitted"
@@ -1538,6 +1671,7 @@ def apply_to_job(
     saved_answers: dict,
     resume_path: str,
     photo_path: str = "",
+    custom_answers: dict | None = None,
 ) -> tuple[str, str, str, str]:
     """
     Select job card, open Easy Apply in detail panel, fill and submit if simple.
@@ -1555,7 +1689,7 @@ def apply_to_job(
         return job_title, company_name, job_url, "skipped (Apply button not found)"
 
     time.sleep(2)
-    result = fill_easy_apply_modal(driver, saved_answers, resume_path or "", photo_path or "")
+    result = fill_easy_apply_modal(driver, saved_answers, resume_path or "", photo_path or "", custom_answers)
 
     if result == "submitted" or _application_submitted(driver):
         close_modal(driver)

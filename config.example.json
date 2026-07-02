@@ -31,5 +31,9 @@
     "salary": "",
     "sponsorship": "No",
     "start_date": "Immediately"
+  },
+  "custom_answers": {
+    "example question substring": "example answer",
+    "years of experience with angular": "5"
   }
 }

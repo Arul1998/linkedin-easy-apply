@@ -125,6 +125,12 @@ You can override any of these with environment variables (see below).
 
 **Form answers** (first name, last name, email, phone, city, start date, cover letter, salary, sponsorship, etc.) go in **`saved_answers`** and are used when filling the Easy Apply modal.
 
+### Resume-based answers
+
+When `resume_path` is set, the resume text is parsed once (PDF via `pypdf`) into a profile — skills, total and per-skill years of experience, work authorization, notice period, education. Remaining form questions (text, number, dropdown, Yes/No radios) are answered from this profile, e.g. "How many years of experience do you have with Angular?" or "Are you legally authorized to work in the UK?".
+
+Answer priority: `custom_answers` (config) → resume profile → `saved_answers`. Questions the engine can't answer confidently are left blank and logged as `Unanswered form question (add to custom_answers): ...` — add those to **`custom_answers`** in `config.json` as `"question substring": "answer"` pairs (a key matches when its words all appear in the question).
+
 ### Config file (`config.json`)
 
 Example (all optional if using env vars):

@@ -1,279 +1,246 @@
-# LinkedIn Easy Apply – Standalone Automation
+# LinkedIn Easy Apply Bot
 
-A standalone Python + Selenium project that logs into LinkedIn, searches jobs with configurable keywords and location, and applies only to **Easy Apply** jobs. Applications are tracked to a CSV or JSON file, with configurable rate limiting to reduce detection risk.
+A small robot on your computer that helps you apply to jobs on LinkedIn — automatically.
 
-## Features
+You tell it what job you want. It opens Chrome, logs into LinkedIn, finds **Easy Apply** jobs, fills in your details, uploads your CV, and clicks submit. It also keeps a list of jobs it already applied to so it does not apply twice.
 
-- **Login** via environment variables or `.env` (no passwords in code)
-- **Configurable job search**: keywords, location, remote filter
-- **Easy Apply only**: detects Easy Apply jobs, fills saved answers where possible, submits; skips or flags multi-step/complex applications
-- **Application tracking**: job title, company name, job URL, date applied (CSV or JSON)
-- **Rate limiting**: configurable delays between actions and between applications
-- **Single config**: `config.json` and/or env vars for keywords, location, delays, optional resume path
+**Cost:** Free. No monthly fee. You only need your computer, Chrome, internet, and a LinkedIn account.
 
-## Requirements
+---
 
-- Python 3.10+
-- Chrome browser (for Selenium WebDriver)
+## What it does (in plain English)
 
-## Setup
+1. Reads your settings (`config.json` + `.env`)
+2. Opens Chrome and logs into LinkedIn
+3. Searches for jobs (e.g. "frontend developer" in "United Kingdom")
+4. For each Easy Apply job:
+   - Opens the job
+   - Fills your name, email, phone, city, etc.
+   - Uploads your CV (PDF) and photo (PNG/JPG) if the form asks
+   - Answers simple questions (some from your CV automatically)
+   - Clicks Submit — or skips if the form is too hard
+5. Saves every successful application to `applications.json`
 
-### 1. Clone and create virtualenv
+It waits between clicks so it does not go too fast (that helps avoid LinkedIn blocking you).
 
-```bash
+---
+
+## What you need
+
+- **Python 3.10+**
+- **Google Chrome**
+- **LinkedIn account** (email + password)
+- Your **CV** (PDF) and optional **photo** (PNG/JPG)
+
+---
+
+## Setup (one time)
+
+Open PowerShell in the project folder:
+
+```powershell
 cd linkedin-easy-apply
+
 python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
-**Windows (PowerShell):**
+### Step 1 — Add your LinkedIn login
+
+```powershell
+copy .env.example .env
+```
+
+Edit `.env`:
+
+```
+LINKEDIN_EMAIL=your-email@example.com
+LINKEDIN_PASSWORD=your-password
+```
+
+> Never share `.env` or put your password in `config.json`.
+
+### Step 2 — Add your job settings
+
+```powershell
+copy config.example.json config.json
+```
+
+Edit `config.json`. The important parts:
+
+| Setting | What it means | Example |
+|---------|---------------|---------|
+| `search.keywords` | Job title to search | `"frontend developer"` |
+| `search.location` | Where to search | `"United Kingdom"` |
+| `search.work_type` | `2` = Remote | `"2"` |
+| `max_applications` | How many jobs per run | `5` |
+| `resume_path` | Full path to your CV PDF | `"C:/path/to/cv.pdf"` |
+| `photo_path` | Full path to your photo | `"C:/path/to/photo.png"` |
+| `saved_answers` | Your name, email, phone, city, etc. | see example file |
+
+---
+
+## How to run
+
+Always activate the virtualenv first:
 
 ```powershell
 .\venv\Scripts\Activate.ps1
 ```
 
-**Windows (cmd) / macOS / Linux:**
+### Safe test (no applications sent)
 
-```bash
-# Windows cmd
-venv\Scripts\activate.bat
-# macOS / Linux
-source venv/bin/activate
+```powershell
+python main.py --dry-run
 ```
 
-### 2. Install dependencies
+Chrome opens, logs in, searches jobs — but does **not** apply. Use this first.
 
-```bash
-pip install -r requirements.txt
+### Check your setup (no browser)
+
+```powershell
+python main.py --validate-only
 ```
 
-### 3. Configure credentials (required)
+### Real run (applies to jobs)
 
-Create a `.env` file in the project root (never commit this file):
-
-```bash
-cp .env.example .env
+```powershell
+python main.py --confirm
 ```
 
-Edit `.env` and set:
+Asks "Proceed?" before sending applications.
 
-- `LINKEDIN_EMAIL` – your LinkedIn email
-- `LINKEDIN_PASSWORD` – your LinkedIn password
-
-### 4. Optional: config file
-
-Copy the example config and edit as needed:
-
-```bash
-cp config.example.json config.json
+```powershell
+python main.py
 ```
 
-You can override any of these with environment variables (see below).
+Applies without asking.
 
-## Configuration
+### Useful extra flags
 
-### Environment variables
+| Flag | What it does |
+|------|--------------|
+| `--dry-run` | Test login + search only |
+| `--confirm` | Ask before applying |
+| `--max-applications 3` | Only apply to 3 jobs this run |
+| `--pause-on-challenge` | Wait for you to solve CAPTCHA / 2FA |
+| `--fresh-login` | Ignore saved session, log in again |
+| `--debug` | Show detailed logs |
 
-| Variable | Description |
-|----------|-------------|
-| `LINKEDIN_EMAIL` | LinkedIn login email (required) |
-| `LINKEDIN_PASSWORD` | LinkedIn password (required) |
-| `CONFIG_FILE` | Path to JSON config (default: `config.json`) |
-| `LINKEDIN_KEYWORDS` | Job search keywords / role (e.g. `software engineer`) |
-| `LINKEDIN_LOCATION` | Location (e.g. `United Kingdom`) |
-| `LINKEDIN_WORK_TYPE` | Work type: `1` On-site, `2` Remote, `3` Hybrid (or `Remote`/`Hybrid`/`On-site`) |
-| `LINKEDIN_JOB_TYPE` | Job type: `F` Full-time, `P` Part-time, `C` Contract, `T` Temporary, `V` Volunteer, `I` Internship, `O` Other |
-| `LINKEDIN_DATE_POSTED` | Date posted: `r86400` 24h, `r604800` week, `r2592000` month |
-| `LINKEDIN_EXPERIENCE_LEVEL` | Experience: `1`–`6` (comma-separated), see below |
-| `LINKEDIN_FEW_APPLICANTS` | Fewer than 10 applicants: `true`/`false` |
-| `LINKEDIN_GEO_ID` | LinkedIn location ID (optional; overrides `location` if set) |
-| `DELAY_ACTIONS_SEC` | Delay between actions in seconds |
-| `DELAY_APPLICATIONS_SEC` | Delay after each application in seconds |
-| `RESUME_PATH` | Optional path to resume/CV file for upload |
-| `TRACKING_FILE` | Output file for applications (e.g. `applications.json` or `applications.csv`) |
-| `TRACKING_FORMAT` | `json` or `csv` |
-| `MAX_APPLICATIONS` | Max number of applications per run (e.g. `5` for testing; `0` = no limit) |
+Example:
 
-### Where to set role, start date, and filters
+```powershell
+python main.py --confirm --pause-on-challenge --max-applications 5
+```
 
-| What you want | Where to set it | Config key (in `search` or env) |
-|---------------|-----------------|----------------------------------|
-| **Role / job title** | Search keywords | `keywords` / `LINKEDIN_KEYWORDS` |
-| **Location** | Search | `location` / `LINKEDIN_LOCATION` |
-| **Work type** (On-site / Remote / Hybrid) | Search | `work_type` / `LINKEDIN_WORK_TYPE` (`1`/`2`/`3` or "On-site"/"Remote"/"Hybrid") |
-| **Job type** (Full-time, Part-time, Contract, etc.) | Search | `job_type` / `LINKEDIN_JOB_TYPE` (`F`, `P`, `C`, `T`, `V`, `I`, `O`) |
-| **Date posted** | Search | `date_posted` / `LINKEDIN_DATE_POSTED` (`r86400`, `r604800`, `r2592000`) |
-| **Experience level** | Search | `experience_level` / `LINKEDIN_EXPERIENCE_LEVEL` (`1`–`6`, comma-separated) |
-| **Few applicants** (&lt;10) | Search | `few_applicants` / `LINKEDIN_FEW_APPLICANTS` (`true`/`false`) |
-| **Location by ID** | Search | `geo_id` / `LINKEDIN_GEO_ID` (optional) |
-| **Start date** (when you can start) | Easy Apply form answer | `saved_answers.start_date` |
-| **First name, last name, email, phone, city, cover letter, salary, sponsorship** | Easy Apply form answers | `saved_answers` in `config.json` |
+---
 
-**Search filters reference** (all under `config.json` → `search`, or env):
+## Your two config files
 
-| Key | Values | Description |
-|-----|--------|-------------|
-| `keywords` | Any string | Role / job title search |
-| `location` | e.g. "United Kingdom" | Geographic location |
-| `work_type` | `1` or "On-site", `2` or "Remote", `3` or "Hybrid" | Work arrangement |
-| `job_type` | `F` Full-time, `P` Part-time, `C` Contract, `T` Temporary, `V` Volunteer, `I` Internship, `O` Other | Job type |
-| `date_posted` | `r86400` (24h), `r604800` (week), `r2592000` (month) | When job was posted |
-| `experience_level` | `1` Intern, `2` Associate, `3` Junior, `4` Mid-Senior, `5` Director, `6` Executive (use `"3,4"` for multiple) | Experience level |
-| `few_applicants` | `true` / `false` | Only jobs with fewer than 10 applicants |
-| `geo_id` | LinkedIn geo ID | Optional; overrides `location` if set |
+### `.env` — secrets only
 
-**Not available as URL filters** (LinkedIn does not expose these in the search URL): salary range, industry, job function, benefits, sponsorship. You can add keywords like "visa sponsorship" in `keywords`, or apply those filters once manually in LinkedIn’s job search UI and then run the script.
+- LinkedIn email
+- LinkedIn password
 
-**Form answers** (first name, last name, email, phone, city, start date, cover letter, salary, sponsorship, etc.) go in **`saved_answers`** and are used when filling the Easy Apply modal.
+### `config.json` — everything else
 
-### Resume-based answers
+- **search** — what jobs to look for
+- **saved_answers** — name, email, phone, city, cover letter, start date
+- **resume_path** — your CV file
+- **photo_path** — your photo (for forms that ask for a picture)
+- **custom_answers** — extra Q&A for tricky form questions
 
-When `resume_path` is set, the resume text is parsed once (PDF via `pypdf`) into a profile — skills, total and per-skill years of experience, work authorization, notice period, education. Remaining form questions (text, number, dropdown, Yes/No radios) are answered from this profile, e.g. "How many years of experience do you have with Angular?" or "Are you legally authorized to work in the UK?".
-
-Answer priority: `custom_answers` (config) → resume profile → `saved_answers`. Questions the engine can't answer confidently are left blank and logged as `Unanswered form question (add to custom_answers): ...` — add those to **`custom_answers`** in `config.json` as `"question substring": "answer"` pairs (a key matches when its words all appear in the question).
-
-### Config file (`config.json`)
-
-Example (all optional if using env vars):
+Example `custom_answers`:
 
 ```json
-{
-  "max_applications": 5,
-  "search": {
-    "keywords": "software engineer",
-    "location": "United Kingdom",
-    "work_type": "2",
-    "job_type": "F",
-    "date_posted": "r604800",
-    "experience_level": "3,4",
-    "few_applicants": false,
-    "geo_id": ""
-  },
-  "rate_limiting": {
-    "delay_between_actions_sec": 2,
-    "delay_between_applications_sec": 30
-  },
-  "resume_path": "/path/to/resume.pdf",
-  "tracking": {
-    "output_file": "applications.json",
-    "format": "json"
-  },
-  "saved_answers": {
-    "first_name": "Your First Name",
-    "last_name": "Your Last Name",
-    "email": "your.email@example.com",
-    "phone": "+44 ...",
-    "city": "London",
-    "cover_letter": "...",
-    "salary": "",
-    "sponsorship": "No",
-    "start_date": "Immediately"
-  }
+"custom_answers": {
+  "years of experience with react": "4",
+  "are you authorized to work in the uk": "Yes"
 }
 ```
 
-Environment variables override config file values. Credentials **must** come from the environment (or `.env`), not from the config file.
+If the bot cannot answer a question, it logs something like:
 
-## How to run and test
+`Unanswered form question (add to custom_answers): "..."`
 
-### Quick test (no applications submitted)
+Copy that question into `custom_answers` with your answer.
 
-1. **Setup once**
-   ```bash
-   cd linkedin-easy-apply
-   python -m venv venv
-   .\venv\Scripts\Activate.ps1   # Windows PowerShell
-   pip install -r requirements.txt
-   ```
-2. **Add credentials**
-   - Copy `.env.example` to `.env` and set `LINKEDIN_EMAIL` and `LINKEDIN_PASSWORD`.
-3. **Dry run** (login + search only; no Easy Apply clicks, no submissions):
-   ```bash
-   python main.py --dry-run
-   ```
-   You should see a Chrome window log in, open the job search, and then:  
-   `Dry run: found N job cards, M with Easy Apply. Login and search OK. Run without --dry-run to apply.`
+---
 
-### Full run (apply to jobs)
+## Smart answers from your CV
 
-1. Activate the virtualenv and ensure `.env` is set (see above).
-2. Optional: copy `config.example.json` to `config.json` and set keywords, location, delays, `saved_answers`, and `resume_path`.
-3. Run:
-   ```bash
-   python main.py
-   ```
+If you set `resume_path`, the bot reads your PDF and tries to answer questions like:
 
-The script will:
+- "How many years of experience with Angular?"
+- "Are you authorized to work in the UK?"
 
-1. Log into LinkedIn
-2. Open job search with your keywords/location (Easy Apply filter applied)
-3. Iterate over Easy Apply job cards: open each job, click Easy Apply, fill saved answers where possible, submit if it’s a single-step flow
-4. Skip jobs already in the tracking file, multi-step applications, or when it can’t submit
-5. Append each applied job to `applications.json` (or your configured CSV/JSON file)
+**Priority:** `custom_answers` → CV profile → `saved_answers`
 
-## Output (tracking)
+---
 
-- **JSON** (default): array of `{ "job_title", "company_name", "job_url", "date_applied" }`.
-- **CSV**: same fields as columns.
+## Where results are saved
 
-File path and format are set by `TRACKING_FILE` and `TRACKING_FORMAT` (or `config.json`).
+After each run, check `applications.json` (or `applications.csv` if you configured that):
 
-## Rate limiting
-
-- `delay_between_actions_sec`: pause between normal actions (clicks, page loads).
-- `delay_between_applications_sec`: longer pause after each successful application.
-
-Increase these if you want to lower the risk of detection (e.g. 3–5 s for actions, 45–60 s between applications).
-
-## Security and compliance
-
-- **Do not** put LinkedIn credentials in code or in `config.json`.
-- Use `.env` for local secrets; `.env` is in `.gitignore`.
-- Respect LinkedIn’s Terms of Service and use automation at your own risk. Prefer conservative delays and occasional use.
-
-## Project structure
-
-```
-linkedin-easy-apply/
-├── .env.example       # Example env (copy to .env)
-├── .gitignore         # Includes .env and .linkedin_session/
-├── config.example.json
-├── config.py          # Loads config from env + optional config.json
-├── errors.py          # User-friendly status messages
-├── session_store.py   # Saved LinkedIn session cookies
-├── linkedin_automation.py  # Login, search, Easy Apply (Selenium)
-├── main.py            # Entry point, rate limiting, tracking loop
-├── tracker.py         # CSV/JSON application tracking
-├── tests/             # Automated tests (pytest)
-├── requirements.txt
-├── requirements-dev.txt
-└── README.md
+```json
+{
+  "job_title": "Frontend Developer",
+  "company_name": "Some Company",
+  "job_url": "https://...",
+  "date_applied": "2026-07-03 12:00:00",
+  "status": "applied"
+}
 ```
 
-## Troubleshooting
+---
 
-- **Login fails**: Check email/password in `.env`. If LinkedIn shows CAPTCHA or 2FA, re-run with `--pause-on-challenge`. Use `--fresh-login` to ignore a stale saved session.
-- **Validate setup without browser**: `python main.py --validate-only`
-- **No jobs / wrong jobs**: Adjust `keywords` and `location` in config or env; search uses LinkedIn’s built-in Easy Apply filter.
-- **Applications not submitted**: Many Easy Apply forms have multiple steps or custom questions; the script now handles up to 12 steps but still skips very complex forms.
-- **LinkedIn blocks or CAPTCHA**: Increase delays and run less frequently. Use `--pause-on-challenge`.
+## Important things to know
 
-## New CLI options
+- **Free to use** — no API keys, no subscription for this tool
+- **LinkedIn may not like bots** — use reasonable delays (30+ seconds between applications)
+- **Not every job works** — complex forms with many steps or weird questions get skipped
+- **CAPTCHA / 2FA** — run with `--pause-on-challenge` and complete it in the browser
+- **Session saved** — after first login, cookies are stored in `.linkedin_session/` so you log in less often
 
-| Flag | Description |
-|------|-------------|
-| `--validate-only` | Check `.env` and `config.json` without opening Chrome |
-| `--pause-on-challenge` | Wait for you to complete CAPTCHA/2FA in the browser |
-| `--fresh-login` | Ignore saved session cookies and log in again |
-| `--confirm` | Ask before submitting real applications |
-| `--debug` | Verbose selector logging |
+---
 
-## Session persistence
+## If something goes wrong
 
-After a successful login, cookies are saved to `.linkedin_session/cookies.json` (gitignored). The next run reuses this session so you log in less often. Use `--fresh-login` to force a new login.
+| Problem | Fix |
+|---------|-----|
+| Login fails | Check `.env` email/password. Try `--fresh-login` |
+| CAPTCHA appears | Run with `--pause-on-challenge` |
+| No jobs found | Change `keywords` or `location` in `config.json` |
+| Form not filled | Update `saved_answers` with your real details |
+| Weird question skipped | Add it to `custom_answers` in `config.json` |
+| `ModuleNotFoundError: selenium` | Activate venv and run `pip install -r requirements.txt` |
 
-## Running tests
+---
 
-```bash
+## Project files (quick map)
+
+```
+main.py                 ← start here (run this)
+config.json             ← your job search + personal details
+.env                    ← your LinkedIn login (secret)
+linkedin_automation.py  ← browser robot (login, apply, fill forms)
+resume_profile.py       ← reads your CV to answer questions
+tracker.py              ← saves applied jobs list
+applications.json       ← output: jobs you applied to
+```
+
+---
+
+## Run tests (optional)
+
+```powershell
 pip install -r requirements-dev.txt
 pytest
 ```
+
+---
+
+## One-line summary
+
+> **Free bot that applies to LinkedIn Easy Apply jobs for you, using your CV and saved answers, and keeps track of what it already did.**

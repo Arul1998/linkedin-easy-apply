@@ -145,7 +145,10 @@ def get_driver(headless: bool = False):
     options.add_experimental_option("useAutomationExtension", False)
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
-    driver.implicitly_wait(3)
+    # No implicit wait: the fill code probes many selectors that legitimately
+    # find nothing, and an implicit wait turns each miss into a 3s stall
+    # (minutes per Easy Apply step). Explicit WebDriverWaits cover loading.
+    driver.implicitly_wait(0)
     return driver
 
 
@@ -338,61 +341,21 @@ def ensure_easy_apply_url(driver) -> None:
         new_url = _url_with_easy_apply(current)
         if new_url != current:
             driver.get(new_url)
-            time.sleep(2)
+            time.sleep(1.5)
     except Exception:
         pass
 
 
 def _ensure_linkedin_apply_filter(driver) -> None:
-    """Turn on 'LinkedIn Apply' filter: ensure URL has f_AL=true so only Easy Apply jobs are shown."""
+    """Ensure the URL carries f_AL=true so only Easy Apply jobs are shown.
+    The URL param is authoritative; no need to open the filters panel."""
     try:
-        time.sleep(2)
         current = driver.current_url
         if "f_AL=true" not in current and "f_Al=true" not in current:
             new_url = _url_with_easy_apply(current)
             if new_url != current:
                 driver.get(new_url)
-                time.sleep(3)
-        # 2) Open "All filters" panel to ensure LinkedIn Apply is on
-        all_filters = driver.find_elements(By.XPATH, "//button[contains(., 'All filters')]")
-        if all_filters and all_filters[0].is_displayed():
-            try:
-                all_filters[0].click()
                 time.sleep(2)
-            except Exception:
-                pass
-        # 3) Find LinkedIn Apply toggle (in filter panel or on page) and turn on if off
-        for xpath in [
-            "//label[contains(., 'LinkedIn Apply')]/..//button",
-            "//*[contains(., 'LinkedIn Apply')]//button[@role='switch']",
-            "//button[@aria-label and contains(@aria-label, 'LinkedIn Apply')]",
-            "//span[contains(., 'LinkedIn Apply')]/ancestor::button",
-        ]:
-            toggles = driver.find_elements(By.XPATH, xpath)
-            for t in toggles:
-                if not t.is_displayed():
-                    continue
-                try:
-                    checked = t.get_attribute("aria-checked")
-                    if checked == "false" or checked is None:
-                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", t)
-                        time.sleep(0.3)
-                        t.click()
-                        time.sleep(2)
-                    break
-                except Exception:
-                    pass
-            else:
-                continue
-            break
-        # 4) If we opened All filters, click "Show results" to apply and close
-        show_btn = driver.find_elements(By.XPATH, "//button[contains(., 'Show') and (contains(., 'result') or contains(., 'results'))]")
-        if show_btn and show_btn[0].is_displayed():
-            try:
-                show_btn[0].click()
-                time.sleep(2)
-            except Exception:
-                pass
     except Exception:
         pass
 
@@ -417,12 +380,10 @@ def navigate_to_search(
     time.sleep(PAGE_LOAD_WAIT)
     if "jobs" not in driver.current_url:
         return False
-    time.sleep(2)
     _ensure_linkedin_apply_filter(driver)
-    time.sleep(2)
     try:
         driver.execute_script("document.querySelector('.jobs-search-results-list, .scaffold-layout__list-container')?.scrollBy(0, 300);")
-        time.sleep(1)
+        time.sleep(0.5)
     except Exception:
         pass
     return True
@@ -440,7 +401,7 @@ def get_job_cards(driver):
             )
         except Exception:
             logger.debug("Timeout waiting for job list to appear.", exc_info=True)
-        time.sleep(2)
+        time.sleep(0.5)
         # Try multiple selectors (LinkedIn changes DOM often)
         cards = []
         for sel in JOB_LIST_SELECTORS:
@@ -531,7 +492,7 @@ def select_job_card(driver, card) -> bool:
         if not link.is_displayed():
             return False
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", link)
-        time.sleep(0.5)
+        time.sleep(0.2)
         link.click()
         # Wait for the detail panel to actually load (up to 10s)
         try:
@@ -541,7 +502,7 @@ def select_job_card(driver, card) -> bool:
                 ))
             )
         except Exception:
-            time.sleep(3)  # Fallback if button never appears
+            time.sleep(1)  # Fallback if button never appears
         return True
     except Exception:
         return False
@@ -553,7 +514,7 @@ def open_job_by_url(driver, job_url: str) -> bool:
         return False
     try:
         driver.get(job_url)
-        time.sleep(2)
+        time.sleep(1)
         return "jobs" in driver.current_url
     except Exception:
         return False
@@ -586,7 +547,7 @@ def _click_apply_button(driver, btn) -> bool:
     """Scroll into view and click the button; fallback to JS click."""
     try:
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-        time.sleep(0.5)
+        time.sleep(0.2)
         btn.click()
         return True
     except Exception:
@@ -699,22 +660,22 @@ def _advance_easy_apply_step(driver) -> str:
         return "submitted"
 
     if _click_modal_action(driver, "submit"):
-        time.sleep(2)
+        time.sleep(1)
         if _application_submitted(driver):
             return "submitted"
         # Some flows need a second submit on the confirmation screen.
         if _click_modal_action(driver, "submit"):
-            time.sleep(2)
+            time.sleep(1)
         return "submitted" if _application_submitted(driver) else "next"
 
     if _click_modal_action(driver, "review"):
-        time.sleep(2)
+        time.sleep(1)
         if _click_modal_action(driver, "submit"):
-            time.sleep(2)
+            time.sleep(1)
         return "submitted" if _application_submitted(driver) else "next"
 
     if _click_modal_action(driver, "next"):
-        time.sleep(2)
+        time.sleep(1)
         return "next"
 
     # JS fallback: scan modal footer buttons from right to left (primary action is usually last).
@@ -756,7 +717,7 @@ def _advance_easy_apply_step(driver) -> str:
     )
     if clicked:
         logger.debug("Clicked modal action via JS fallback: %s", clicked)
-        time.sleep(2)
+        time.sleep(1)
         if "submit" in str(clicked) or _application_submitted(driver):
             return "submitted"
         return "next"
@@ -796,6 +757,16 @@ def click_easy_apply_in_detail_panel(driver) -> bool:
     """Click Easy Apply / In Apply in the job detail (right) panel.
     Returns True only if the Easy Apply modal actually opened."""
     try:
+        # With implicit waits disabled, give the detail panel a moment to render
+        # its apply button before probing selectors.
+        try:
+            WebDriverWait(driver, 6).until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "button#jobs-apply-button-id, button.jobs-apply-button, button[class*='jobs-apply-button']")
+                )
+            )
+        except Exception:
+            logger.debug("Apply button did not appear within 6s; probing anyway.")
         scope = _get_detail_panel(driver)
         search_in = scope if scope else driver
         logger.debug("Detail panel found: %s", scope is not None)
@@ -1172,7 +1143,7 @@ def _reveal_and_upload_file(driver, fi, abs_path: str) -> bool:
             fi,
         )
         fi.send_keys(abs_path)
-        time.sleep(2)
+        time.sleep(1)
         return True
     except Exception:
         return False
@@ -1608,7 +1579,7 @@ def fill_easy_apply_modal(
         )
     except Exception:
         logger.debug("Easy Apply modal container not detected immediately.", exc_info=True)
-    time.sleep(1.5)
+    time.sleep(0.8)
     max_steps = EASY_APPLY_MAX_STEPS
     for step in range(max_steps):
         result = _fill_easy_apply_step(driver, saved_answers, resume_path, photo_path, custom_answers)
@@ -1642,13 +1613,13 @@ def close_modal(driver) -> None:
                 discard[0].click()
             else:
                 driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-        time.sleep(1.5)
+        time.sleep(0.8)
         # Confirm the discard prompt if LinkedIn asks to save the application.
         for b in driver.find_elements(By.XPATH, "//button[contains(., 'Discard')]"):
             if b.is_displayed():
                 b.click()
                 break
-        time.sleep(1.5)
+        time.sleep(0.8)
         _scroll_list_into_view(driver)
     except Exception:
         pass
@@ -1660,7 +1631,7 @@ def _scroll_list_into_view(driver) -> None:
         driver.execute_script(
             "var el = document.querySelector('.scaffold-layout__list-container') || document.querySelector('.jobs-search-results-list') || document.querySelector('[data-occludable-job-id]')?.closest('ul'); if(el) el.scrollIntoView({block:'start', behavior:'instant'});"
         )
-        time.sleep(1)
+        time.sleep(0.3)
     except Exception:
         pass
 
@@ -1688,7 +1659,7 @@ def apply_to_job(
     if not click_easy_apply_in_detail_panel(driver):
         return job_title, company_name, job_url, "skipped (Apply button not found)"
 
-    time.sleep(2)
+    time.sleep(1)
     result = fill_easy_apply_modal(driver, saved_answers, resume_path or "", photo_path or "", custom_answers)
 
     if result == "submitted" or _application_submitted(driver):

@@ -153,10 +153,9 @@ def main(
             sys.exit(1)
         rate_limit_actions(cfg)
 
-        cards = get_job_cards(driver)
-        easy_apply_cards = [c for c in cards if job_has_easy_apply(c)]
-
         if dry_run:
+            cards = get_job_cards(driver)
+            easy_apply_cards = [c for c in cards if job_has_easy_apply(c)]
             logger.info(
                 "Dry run: found %d job cards, %d with Easy Apply.",
                 len(cards),
